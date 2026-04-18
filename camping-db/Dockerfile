@@ -29,8 +29,8 @@ COPY migrations/ /app/migrations/
 # 3) Layer on camping-db migrations and domain code.
 COPY camping-db/migrations/ /app/migrations/
 COPY camping-db/app.py /app/app.py
-COPY camping-db/identity.py /app/identity.py
 COPY camping-db/prompts/ /app/prompts/
+COPY camping-db/identities/ /app/identities/
 COPY camping-db/tools/ /app/tools/
 COPY camping-db/scripts/ /app/scripts/
 

@@ -1,6 +1,7 @@
 """Postgres-backed primitives for Strands agents."""
 
 from strands_pg.api import make_app
+from strands_pg.identity import Identity, PgIdentity
 from strands_pg.memory import PgMemoryStore
 from strands_pg.memory_tools import memory_tools
 from strands_pg.prompts import PgPromptStore, Prompt
@@ -10,6 +11,8 @@ __all__ = [
     "PgSessionManager",
     "PgMemoryStore",
     "PgPromptStore",
+    "PgIdentity",
+    "Identity",
     "Prompt",
     "make_app",
     "memory_tools",

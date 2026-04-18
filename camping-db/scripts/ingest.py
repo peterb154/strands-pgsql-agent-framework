@@ -1,11 +1,13 @@
 """One-shot ingest: pull camping-db domain data into Postgres.
 
-Reads from the legacy repo (SQLite + JSON + markdown) and writes to the
-framework Postgres. Run once per fresh database:
+Imports camps from legacy SQLite and parcel_services from the legacy JSON.
+Identity files are NOT ingested here — the framework's ``PgIdentity.seed_from_dir``
+runs at app boot against ``camping-db/identities/*.md``.
 
-    # from the camping-db/ directory, with the stack up:
-    docker compose run --rm agent python scripts/ingest.py \
-        --source /legacy/data
+Run once against a fresh database:
+
+    # from inside the agent container (legacy data mounted at /legacy):
+    docker exec camping-db-agent-1 python /app/scripts/ingest.py --source /legacy
 
     # or from host against a running stack:
     STRANDS_PG_DSN=postgresql://strands:strands@localhost:5433/strands \
@@ -17,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,12 +39,10 @@ CAMP_COLS = [
     "air_mi_from_town", "dir_from_town", "upd", "data_date",
 ]
 
-# SQLite has a `date` column; rename to data_date for Postgres (date is reserved-ish).
-SQLITE_COL_MAP = {"date": "data_date"}
+SQLITE_COL_MAP = {"date": "data_date"}  # `date` is awkward in PG.
 
 
 def ingest_camps(sqlite_path: Path, pg_dsn: str) -> int:
-    """Copy camps from SQLite to Postgres, including PostGIS point + search blob."""
     src = sqlite3.connect(str(sqlite_path))
     src.row_factory = sqlite3.Row
     rows = src.execute("SELECT * FROM camps").fetchall()
@@ -51,7 +50,6 @@ def ingest_camps(sqlite_path: Path, pg_dsn: str) -> int:
 
     insert_cols = [*CAMP_COLS, "location", "search_text"]
     placeholders = ", ".join(
-        # location is derived; search_text is a plain text blob
         "ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography"
         if c == "location"
         else "%s"
@@ -67,18 +65,14 @@ def ingest_camps(sqlite_path: Path, pg_dsn: str) -> int:
     with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
         cur.execute("TRUNCATE camps")
         for r in rows:
-            record = {SQLITE_COL_MAP.get(k, k): r[k] for k in r.keys()}
+            record = {SQLITE_COL_MAP.get(k, k): r[k] for k in r.keys()}  # noqa: SIM118
             values: list = [record.get(c) for c in CAMP_COLS]
-            # location: (lon, lat) for PostGIS
-            lat = record.get("lat")
-            lon = record.get("lon")
-            values.extend([lon, lat])
-            # search_text blob
-            parts = [
+            values.extend([record.get("lon"), record.get("lat")])
+            blob = " ".join(
                 str(record.get(k) or "")
                 for k in ("camp", "town", "state", "directions", "comments")
-            ]
-            values.append(" ".join(parts).strip())
+            ).strip()
+            values.append(blob)
             cur.execute(sql, values)
             n += 1
         conn.commit()
@@ -91,69 +85,17 @@ def ingest_parcel_services(json_path: Path, pg_dsn: str) -> int:
     with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
         cur.execute("TRUNCATE parcel_services")
         for key, row in data.items():
+            extras = {k: v for k, v in row.items() if k not in {"name", "url"}}
             cur.execute(
                 """
                 INSERT INTO parcel_services (key, name, url, metadata)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (key, row["name"], row["url"], Jsonb({k: v for k, v in row.items() if k not in {"name", "url"}})),
+                (key, row["name"], row["url"], Jsonb(extras)),
             )
         conn.commit()
     log.info("inserted %d parcel services", len(data))
     return len(data)
-
-
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
-
-
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Minimal YAML-ish frontmatter parser — we only care about a handful of keys."""
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, text
-    fm_raw, body = match.group(1), match.group(2)
-    meta: dict = {}
-    for line in fm_raw.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        k, v = k.strip(), v.strip()
-        if v.startswith("[") and v.endswith("]"):
-            meta[k] = [x.strip() for x in v[1:-1].split(",") if x.strip()]
-        else:
-            meta[k] = v
-    return meta, body
-
-
-def ingest_identities(identities_dir: Path, pg_dsn: str) -> int:
-    count = 0
-    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE identity_emails")
-        cur.execute("TRUNCATE identities CASCADE")
-        for md in sorted(identities_dir.glob("*.md")):
-            text = md.read_text(encoding="utf-8")
-            meta, body = _parse_frontmatter(text)
-            user_id = md.stem
-            title = meta.get("title")
-            tags = meta.get("tags", [])
-            emails = meta.get("emails", [])
-            metadata = {k: v for k, v in meta.items() if k not in {"title", "tags", "emails"}}
-            cur.execute(
-                """
-                INSERT INTO identities (user_id, title, body, tags, metadata)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (user_id, title, body.strip(), tags, Jsonb(metadata)),
-            )
-            for email in emails:
-                cur.execute(
-                    "INSERT INTO identity_emails (email, user_id) VALUES (%s, %s)",
-                    (email, user_id),
-                )
-            count += 1
-        conn.commit()
-    log.info("inserted %d identities", count)
-    return count
 
 
 def main() -> int:
@@ -162,14 +104,9 @@ def main() -> int:
         "--source",
         type=Path,
         required=True,
-        help="Path to the legacy camping-db data/ directory "
-        "(contains camping.db, parcel_services.json, identities/)",
+        help="Path to the legacy data/ dir (camping.db + parcel_services.json).",
     )
-    parser.add_argument(
-        "--dsn",
-        default=None,
-        help="Postgres DSN; falls back to STRANDS_PG_DSN.",
-    )
+    parser.add_argument("--dsn", default=None, help="Postgres DSN; falls back to STRANDS_PG_DSN.")
     args = parser.parse_args()
 
     import os
@@ -179,10 +116,8 @@ def main() -> int:
         log.error("no DSN: pass --dsn or set STRANDS_PG_DSN")
         return 2
 
-    src = args.source
-    ingest_camps(src / "camping.db", dsn)
-    ingest_parcel_services(src / "parcel_services.json", dsn)
-    ingest_identities(src / "identities", dsn)
+    ingest_camps(args.source / "camping.db", dsn)
+    ingest_parcel_services(args.source / "parcel_services.json", dsn)
     log.info("done.")
     return 0
 
