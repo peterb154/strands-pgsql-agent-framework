@@ -20,7 +20,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from strands_pg._pool import get_pool
@@ -53,13 +52,6 @@ class PgMemoryStore:
         self._pool = get_pool(dsn)
         self._embedder = embedder or _default_embedder()
         self._default_namespace = default_namespace
-        self._vector_registered = False
-
-    def _ensure_vector(self, conn: Any) -> None:
-        if self._vector_registered:
-            return
-        register_vector(conn)
-        self._vector_registered = True
 
     def add(
         self,
@@ -71,21 +63,19 @@ class PgMemoryStore:
         ns = namespace or self._default_namespace
         embedding = self._embedder(text)
 
-        with self._pool.connection() as conn:
-            self._ensure_vector(conn)
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO memories (namespace, text, metadata, embedding)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (ns, text, Jsonb(metadata or {}), embedding),
-                )
-                row = cur.fetchone()
-                assert row is not None
-                conn.commit()
-                return int(row[0])
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO memories (namespace, text, metadata, embedding)
+                VALUES (%s, %s, %s, %s::vector)
+                RETURNING id
+                """,
+                (ns, text, Jsonb(metadata or {}), embedding),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            conn.commit()
+            return int(row[0])
 
     def search(
         self,
@@ -97,21 +87,19 @@ class PgMemoryStore:
         ns = namespace or self._default_namespace
         query_vec = self._embedder(query)
 
-        with self._pool.connection() as conn:
-            self._ensure_vector(conn)
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, namespace, text, metadata,
-                           embedding <=> %s AS distance
-                    FROM memories
-                    WHERE namespace = %s
-                    ORDER BY embedding <=> %s
-                    LIMIT %s
-                    """,
-                    (query_vec, ns, query_vec, k),
-                )
-                rows = cur.fetchall()
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, namespace, text, metadata,
+                       embedding <=> %s::vector AS distance
+                FROM memories
+                WHERE namespace = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_vec, ns, query_vec, k),
+            )
+            rows = cur.fetchall()
 
         return [
             MemoryHit(

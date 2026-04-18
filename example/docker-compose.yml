@@ -33,11 +33,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      # .env in this directory. Copy from .env.example. env_file loads into
+      # the *container* environment directly, so host shell exports (e.g.
+      # AWS_PROFILE=saml) don't leak in via ${...} substitution.
+      - .env
     environment:
       STRANDS_PG_DSN: postgresql://strands:strands@db:5432/strands
-      STRANDS_PG_MODEL_ID: ${STRANDS_PG_MODEL_ID:-us.anthropic.claude-sonnet-4-5-20250929-v1:0}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      AWS_PROFILE: ${AWS_PROFILE:-default}
     volumes:
       # Pass through host AWS creds for Bedrock calls. In production, use an
       # IAM role or a scoped env-file instead.

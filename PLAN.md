@@ -87,6 +87,10 @@ Goal: `docker compose up` → working "ask me anything" agent with persistent se
 - `PgIdentity` (RLS + per-user rows — camping-db's multi-identity case)
 - SSE streaming for `/chat/stream`
 - PostgREST or `pg_graphql` for auto-API
+- **Deploy webhook** — `POST /deploy` (HMAC-verified) that fires on pushes to
+  `main`. Pulls the latest image (or rebuilds), runs migrations, and restarts
+  the agent service in place. Token/secret stored per-agent in DB. Must be
+  safe if it runs concurrent with /chat (rolling restart, not stop-start).
 - `camping-db` migration onto the framework (validates everything on real load)
 
 ## Tooling & conventions
