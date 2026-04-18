@@ -1,0 +1,50 @@
+# camping-db agent + db. Runs alongside example/ on a different host port
+# so both stacks can be up at once.
+
+services:
+  db:
+    build:
+      context: ..
+      dockerfile: images/db/Dockerfile
+    image: strands-pg-db:local
+    environment:
+      POSTGRES_USER: strands
+      POSTGRES_PASSWORD: strands
+      POSTGRES_DB: strands
+    volumes:
+      - camping_pgdata:/var/lib/postgresql/data
+    ports:
+      # expose on 5433 so host scripts (ingest.py) can reach this db without
+      # colliding with the example stack.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strands -d strands"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ..
+      dockerfile: camping-db/Dockerfile
+    image: strands-pg-camping-db:local
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      STRANDS_PG_DSN: postgresql://strands:strands@db:5432/strands
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+      # legacy data mounted read-only so ingest.py can reach camping.db,
+      # parcel_services.json, identities/*.md. Not required at runtime —
+      # only for the one-shot ingest.
+      - ${HOME}/Projects/personal/camping-db/data:/legacy:ro
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+
+volumes:
+  camping_pgdata:
