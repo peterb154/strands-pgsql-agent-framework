@@ -1,0 +1,50 @@
+# Reference stack: agent + db. One LXC per pair.
+#
+# Start:
+#   docker compose up --build
+#
+# AWS creds for Bedrock are passed through from the host via ~/.aws mount.
+# Swap in an env-file or IAM role in production.
+
+services:
+  db:
+    build:
+      context: ..
+      dockerfile: images/db/Dockerfile
+    image: strands-pg-db:local
+    environment:
+      POSTGRES_USER: strands
+      POSTGRES_PASSWORD: strands
+      POSTGRES_DB: strands
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U strands -d strands"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ..
+      dockerfile: example/Dockerfile
+    image: strands-pg-example:local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      STRANDS_PG_DSN: postgresql://strands:strands@db:5432/strands
+      STRANDS_PG_MODEL_ID: ${STRANDS_PG_MODEL_ID:-us.anthropic.claude-sonnet-4-5-20250929-v1:0}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+    volumes:
+      # Pass through host AWS creds for Bedrock calls. In production, use an
+      # IAM role or a scoped env-file instead.
+      - ${HOME}/.aws:/root/.aws:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
