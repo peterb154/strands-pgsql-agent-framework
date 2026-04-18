@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from strands_pg.prompts import PgPromptStore
+
 if TYPE_CHECKING:
     from strands.agent.agent import Agent
 
@@ -33,13 +35,29 @@ class ChatResponse(BaseModel):
     response: str
 
 
+class PromptBody(BaseModel):
+    body: str = Field(..., min_length=1)
+
+
+class PromptOut(BaseModel):
+    name: str
+    body: str
+
+
 def make_app(
     agent_factory: AgentFactory,
     *,
     cache_agents: bool = True,
     title: str = "strands-pg agent",
+    prompt_store: PgPromptStore | None = None,
 ) -> FastAPI:
-    """Build a FastAPI app exposing /health and /chat."""
+    """Build a FastAPI app exposing /health, /chat, and /prompts endpoints.
+
+    ``prompt_store``: if provided, /prompts endpoints are registered and the
+    agent factory is dropped from the cache whenever a prompt changes (so the
+    next request builds a fresh agent with the updated prompt). If None, no
+    /prompts endpoints are registered.
+    """
     app = FastAPI(title=title)
     agents: dict[str, Any] = {}
 
@@ -50,6 +68,9 @@ def make_app(
         if cache_agents:
             agents[session_id] = agent
         return agent
+
+    def invalidate_agents() -> None:
+        agents.clear()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -65,5 +86,32 @@ def make_app(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         return ChatResponse(session_id=req.session_id, response=str(result))
+
+    if prompt_store is not None:
+
+        @app.get("/prompts", response_model=list[PromptOut])
+        def list_prompts() -> list[PromptOut]:
+            return [PromptOut(name=p.name, body=p.body) for p in prompt_store.list()]
+
+        @app.get("/prompts/{name}", response_model=PromptOut)
+        def get_prompt(name: str) -> PromptOut:
+            p = prompt_store.get(name)
+            if p is None:
+                raise HTTPException(status_code=404, detail=f"prompt {name!r} not found")
+            return PromptOut(name=p.name, body=p.body)
+
+        @app.put("/prompts/{name}", response_model=PromptOut)
+        def put_prompt(name: str, req: PromptBody) -> PromptOut:
+            p = prompt_store.put(name, req.body)
+            invalidate_agents()
+            return PromptOut(name=p.name, body=p.body)
+
+        @app.delete("/prompts/{name}")
+        def delete_prompt(name: str) -> dict[str, bool]:
+            ok = prompt_store.delete(name)
+            if not ok:
+                raise HTTPException(status_code=404, detail=f"prompt {name!r} not found")
+            invalidate_agents()
+            return {"deleted": True}
 
     return app

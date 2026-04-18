@@ -181,23 +181,30 @@ def _default_embedder() -> Embedder:
 
 
 def _bedrock_embedder(model_id: str) -> Embedder:
-    """Bedrock embedding via boto3. Titan v2 returns 1024-dim by default."""
-    try:
-        import json
+    """Bedrock embedding via boto3. Titan v2 returns 1024-dim by default.
 
-        import boto3
-    except ImportError as exc:
-        raise RuntimeError(
-            "boto3 is required for the default Bedrock embedder. "
-            "Install with `pip install strands-pg[bedrock]` or pass embedder=... yourself."
-        ) from exc
-
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    client = boto3.client("bedrock-runtime", region_name=region)
+    Client is created lazily on first embed() call so app import doesn't
+    require AWS creds just to boot /health.
+    """
+    client_holder: dict[str, Any] = {}
 
     def embed(text: str) -> list[float]:
+        import json
+
+        if "client" not in client_holder:
+            try:
+                import boto3
+            except ImportError as exc:
+                raise RuntimeError(
+                    "boto3 is required for the default Bedrock embedder. "
+                    "Install with `pip install strands-pg[bedrock]` or "
+                    "pass embedder=... yourself."
+                ) from exc
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            client_holder["client"] = boto3.client("bedrock-runtime", region_name=region)
+
         body = json.dumps({"inputText": text})
-        resp = client.invoke_model(modelId=model_id, body=body)
+        resp = client_holder["client"].invoke_model(modelId=model_id, body=body)
         payload = json.loads(resp["body"].read())
         return list(payload["embedding"])
 

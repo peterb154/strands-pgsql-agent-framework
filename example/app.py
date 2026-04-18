@@ -1,11 +1,9 @@
 """Reference agent wired to strands_pg.
 
-The simplest possible agent: one Strands Agent per session, persistent
-session via PgSessionManager, semantic memory via PgMemoryStore exposed as
-two tools (remember / recall). Defaults to Bedrock Claude; swap the model by
-setting ``STRANDS_PG_MODEL_ID`` or pre-constructing a ``BedrockModel``.
-
-Copy this directory, edit ``prompts/`` and ``tools/``, and you have a new agent.
+Session state, semantic memory, AND prompts live in Postgres. The first time
+the process boots against an empty ``prompts`` table, we seed it from
+``./prompts/*.md``. After that, prompts are edited via the ``/prompts/{name}``
+API — no rebuild, no volume mount, no restart.
 """
 
 from __future__ import annotations
@@ -16,22 +14,22 @@ from pathlib import Path
 from strands import Agent, tool
 from strands.models.bedrock import BedrockModel
 
-from strands_pg import PgMemoryStore, PgSessionManager, make_app
+from strands_pg import (
+    PgMemoryStore,
+    PgPromptStore,
+    PgSessionManager,
+    make_app,
+)
 
+PROMPT_DIR = Path(__file__).parent / "prompts"
+SYSTEM_PROMPT_PARTS = ["soul", "rules"]
+DEFAULT_PROMPT = "You are a helpful assistant."
 
-def _load_prompt() -> str:
-    base = Path(__file__).parent / "prompts"
-    parts = []
-    for name in ("soul.md", "rules.md"):
-        p = base / name
-        if p.exists():
-            parts.append(p.read_text(encoding="utf-8"))
-    return "\n\n".join(parts).strip() or "You are a helpful assistant."
-
+MODEL_ID = os.environ.get("STRANDS_PG_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 memory = PgMemoryStore()
-SYSTEM_PROMPT = _load_prompt()
-MODEL_ID = os.environ.get("STRANDS_PG_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+prompts = PgPromptStore()
+prompts.seed_from_dir(PROMPT_DIR)
 
 
 @tool
@@ -47,17 +45,21 @@ def recall(query: str, k: int = 5) -> str:
     hits = memory.search(query, k=k)
     if not hits:
         return "No matches."
-    lines = [f"- [{h.id}] {h.text}" for h in hits]
-    return "\n".join(lines)
+    return "\n".join(f"- [{h.id}] {h.text}" for h in hits)
 
 
 def build_agent(session_id: str) -> Agent:
+    system_prompt = prompts.assemble(SYSTEM_PROMPT_PARTS) or DEFAULT_PROMPT
     return Agent(
         model=BedrockModel(model_id=MODEL_ID),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         tools=[remember, recall],
         session_manager=PgSessionManager(session_id=session_id),
     )
 
 
-app = make_app(build_agent, title="strands-pg example")
+app = make_app(
+    build_agent,
+    title="strands-pg example",
+    prompt_store=prompts,
+)
