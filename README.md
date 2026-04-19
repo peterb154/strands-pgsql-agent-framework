@@ -303,9 +303,41 @@ curl 'localhost:3000/camps?state=eq.MT&type=eq.NF&limit=5&select=camp,town,lat,l
 curl -I -H 'Prefer: count=exact' 'localhost:3000/camps?state=eq.MT'
 # Content-Range: 0-552/553
 
-# OpenAPI spec:
+# OpenAPI spec (Swagger 2.0 JSON, served at the root):
 curl localhost:3000/
 ```
+
+### Machine-readable schema at `GET /`
+
+PostgREST serves a Swagger 2.0 document at its root path — no flag, no
+separate `/openapi.json` convention, just `GET /`. It's the same spec as
+the HTTP surface, regenerated from the live database schema. Two things
+that matter:
+
+- **Every exposed table shows up under `definitions`** with its columns,
+  types, nullability, and primary key. After the `api`-schema cleanup
+  above, `definitions` lists `camps` and `parcel_services` and nothing
+  else.
+- **Every endpoint shows up under `paths`** — `/camps`, `/parcel_services`,
+  `/rpc/*` for any exposed DB functions. Unreachable paths (tables the
+  requesting role can't touch) still appear; row-level permissions enforce
+  what's actually allowed at request time.
+
+This is the integration point for another agent or service that needs to
+know what data is available without being hand-coded against it. A client
+SDK generator (`openapi-generator`, `datamodel-code-generator`, etc.) can
+turn `curl localhost:3000/` straight into typed models. An LLM-powered
+agent can read the spec as context and construct queries on the fly.
+
+```bash
+# Example: grab just the table names this PostgREST instance exposes:
+curl -s localhost:3000/ | jq -r '.definitions | keys[]'
+# camps
+# parcel_services
+```
+
+No Swagger UI renderer ships with PostgREST — the JSON is the product. If
+you want a browsable view, point any OpenAPI UI at the URL.
 
 Tables that aren't granted to `web_anon` stay invisible — `sessions`,
 `session_messages`, `memories`, `identities`, and `prompts` never leak out
