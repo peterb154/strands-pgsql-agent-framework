@@ -12,26 +12,33 @@ Postgres-backed implementations of the pieces every agent tends to need —
 session manager, memory store, prompt store, identity store — and a few
 conveniences on top (a FastAPI factory, a CLI, Docker images).
 
-It exists because a small purpose-built agent — the kind you write to solve one
-problem well, not a general assistant — needs a handful of things beyond the LLM
-and its tools:
+It exists because any Strands agent — narrow specialist or general assistant —
+eventually needs a handful of things beyond the LLM and its tools:
 
 - Conversation state that survives a restart
 - Long-term memory the agent can search semantically
 - System prompts and per-user context that shouldn't be baked into source
 - A place for domain data the tools query
 
-In a typical build, each of those lands in a different dependency: SQLite for
-campsite records, a vector database for memory, a dotted folder for session
-files, another for prompts, a bespoke FastAPI to tie it together. Three days of
-plumbing before the agent does its first useful thing. Most of that plumbing is
-the same from one agent to the next.
+In a typical build each of those lands in a different dependency: SQLite for
+records, a vector database for memory, a dotted folder for session files,
+another for prompts, a bespoke FastAPI to tie it together. Three days of
+plumbing before the agent does its first useful thing. Most of that plumbing
+is the same from one agent to the next, so writing it once is a good trade.
 
 `strands-pg` puts all of it in one Postgres with pgvector, PostGIS, and pg_trgm,
 and ships the Strands-specific glue that can't be expressed as a tool. The
-thesis: one boring database with a few extensions is enough for a fleet of
-small, narrow agents, and the wiring between it and Strands is worth writing
-once.
+thesis: one boring database with a few extensions replaces the polyglot stack
+most agents accumulate, and the wiring between it and Strands is worth
+writing once.
+
+The primitives don't care about an agent's scope — a general-purpose assistant
+benefits from durable sessions and per-user memory the same way a narrow
+one-problem agent does. The *deployment pattern* (one Postgres co-located with
+one agent, in one Docker Compose stack) is biased toward small agents — it
+assumes a single database is plenty and you'd rather run ten of these than
+scale one of them horizontally. See [What it doesn't do](#what-it-doesnt-do)
+for where that bias bites.
 
 Inference and embeddings go through **AWS Bedrock** by default — Claude
 (Sonnet/Opus/Haiku) for the agent's reasoning, Titan Text Embeddings v2 for
