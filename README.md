@@ -29,6 +29,21 @@ thesis: one boring database with a few extensions is enough for a fleet of
 small, narrow agents, and the wiring between it and Strands is worth writing
 once.
 
+The three extensions, briefly:
+
+- **pgvector** — adds a `vector` column type and similarity-search operators
+  (cosine distance, L2, inner product) plus HNSW and IVFFlat index types for
+  fast approximate nearest-neighbor queries. Used here for semantic memory:
+  you store an embedding per row, then `ORDER BY embedding <=> query_vec`.
+- **PostGIS** — adds `geometry` and `geography` column types and a large
+  library of spatial functions and GIST indexes: `ST_MakePoint`, `ST_DWithin`
+  (points within *N* meters), `ST_Distance`, and so on. The `camping-db/`
+  example uses it for "campsites within 30 miles of these coordinates."
+- **pg_trgm** — trigram indexing for fuzzy text: `LIKE '%foo%'` becomes fast,
+  `similarity()` gives a score, typos get tolerated. Complements tsvector
+  full-text search — tsvector is stemmed word matching, pg_trgm is
+  character-level fuzziness.
+
 ## What's included
 
 - `PgSessionManager` — a `SessionManager` subclass that persists conversations
@@ -91,7 +106,7 @@ sessions at `POST /chat`. That's it.
 Once you have domain data, the shape doesn't change much. You add migrations,
 tools, prompt files, and a few identity profiles:
 
-```
+```text
 my-agent/
 ├── app.py
 ├── prompts/
