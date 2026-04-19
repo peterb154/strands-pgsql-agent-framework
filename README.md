@@ -48,9 +48,11 @@ is the same from one agent to the next, so writing it once is a good trade.
 
 `strands-pg` puts all of it in one Postgres with pgvector, PostGIS, and pg_trgm,
 and ships the Strands-specific glue that can't be expressed as a tool. The
-thesis: one boring database with a few extensions replaces the polyglot stack
-most agents accumulate, and the wiring between it and Strands is worth
-writing once.
+thesis — one boring database with a few extensions replaces the polyglot
+stack most agents accumulate — is cribbed from
+[this "Postgres for everything" talk](https://www.youtube.com/watch?v=TdondBmyNXc);
+watch that for the fuller argument. The wiring between Postgres and Strands
+is the part worth writing once.
 
 The primitives don't care about an agent's scope — a general-purpose assistant
 benefits from durable sessions and per-user memory the same way a narrow

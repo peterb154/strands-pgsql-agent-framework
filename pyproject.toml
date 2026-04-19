@@ -48,3 +48,24 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# python-semantic-release: auto-bump version + tag on merges to main based on
+# Conventional Commits. Triggered by .github/workflows/release.yml. We do NOT
+# publish to PyPI (project is distributed as source via install.sh) — the
+# workflow only creates a tag and a GitHub Release.
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/strands_pg/__init__.py:__version__"]
+upload_to_pypi = false
+upload_to_release = true
+build_command = ""
+commit_parser = "angular"
+commit_message = "chore(release): v{version} [skip ci]"
+tag_format = "v{version}"
+
+[tool.semantic_release.branches.main]
+match = "^main$"
+prerelease = false
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = ["^chore\\(release\\)"]
