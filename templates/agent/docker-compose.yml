@@ -26,7 +26,11 @@ services:
     environment:
       STRANDS_PG_DSN: postgresql://strands:strands@db:5432/strands
     volumes:
-      # rw so boto3 can refresh SSO cache. Use a short-lived creds profile.
+      # Only needed for Option A (AWS_PROFILE with SSO/SAML/STS creds).
+      # rw so boto3 can refresh SSO tokens into ~/.aws/sso/cache.
+      # If you're using static IAM user keys (Option B in .env.example),
+      # DELETE this volume block — the bind mount fails on hosts without
+      # ~/.aws (typical VPS / fresh LXC).
       - ${HOME}/.aws:/root/.aws
     ports:
       - "8000:8000"
