@@ -13,6 +13,8 @@ from pathlib import Path
 from strands import Agent
 from strands.models.bedrock import BedrockModel
 from tools.camps import get_campsite, search_camps
+from tools.geo import geocode, land_ownership
+from tools.parcels import parcel_lookup
 
 from strands_pg import (
     PgIdentity,
@@ -46,7 +48,14 @@ def build_agent(session_id: str) -> Agent:
     return Agent(
         model=BedrockModel(model_id=MODEL_ID),
         system_prompt=_system_prompt_for(session_id),
-        tools=[search_camps, get_campsite, *memory_tools(namespace=session_id)],
+        tools=[
+            search_camps,
+            get_campsite,
+            geocode,
+            land_ownership,
+            parcel_lookup,
+            *memory_tools(namespace=session_id),
+        ],
         session_manager=PgSessionManager(session_id=session_id),
     )
 
