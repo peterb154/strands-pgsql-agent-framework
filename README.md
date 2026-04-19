@@ -1,40 +1,199 @@
 # strands-pg
 
-Postgres-backed primitives for [Strands](https://github.com/strands-agents/sdk-python) agents: session state, semantic memory, knowledge search, queues, spatial data, telemetry — one boring database doing everything.
+Postgres-backed primitives for building purpose-built Strands agents.
 
 ## What this is
 
-A reusable pattern for stamping out small, purpose-built Strands agents. Each agent gets:
+A library, not a framework in the "inherit from `BaseAgent`" sense. You install it,
+apply its migrations, and use the pieces you need. Your agent is still a regular
+`strands.Agent` you build yourself.
 
-- One Python process (Strands + FastAPI + `strands_pg`)
-- One Postgres (with pgvector, PostGIS, pg_trgm, optionally pgai)
-- Brought up with `docker compose up`
-- Deployed to one Proxmox LXC (or anywhere Docker runs)
+It exists because a small purpose-built agent — the kind you write to solve one
+problem well, not a general assistant — needs a handful of things beyond the LLM
+and its tools:
 
-See `PLAN.md` for the full design. See `example/` for a runnable reference agent and the template to copy when stamping a new one.
+- Conversation state that survives a restart
+- Long-term memory the agent can search semantically
+- System prompts and per-user context that shouldn't be baked into source
+- A place for domain data the tools query
 
-## Quick start
+In a typical build, each of those lands in a different dependency: SQLite for
+campsite records, a vector database for memory, a dotted folder for session
+files, another for prompts, a bespoke FastAPI to tie it together. Three days of
+plumbing before the agent does its first useful thing. Most of that plumbing is
+the same from one agent to the next.
 
-```bash
-cd example
-docker compose up --build
-# in another shell
-curl -s localhost:8000/health
-curl -s -X POST localhost:8000/chat \
-  -H 'content-type: application/json' \
-  -d '{"session_id":"demo","message":"hello"}'
+`strands-pg` puts all of it in one Postgres with pgvector, PostGIS, and pg_trgm,
+and ships the Strands-specific glue that can't be expressed as a tool. The
+thesis: one boring database with a few extensions is enough for a fleet of
+small, narrow agents, and the wiring between it and Strands is worth writing
+once.
+
+## What's included
+
+- `PgSessionManager` — a `SessionManager` subclass that persists conversations
+  and agent state in Postgres JSONB. Pass it to `Agent(session_manager=...)` and
+  history survives restarts.
+
+- `PgMemoryStore` + `memory_tools(namespace=...)` — semantic memory on pgvector
+  with HNSW indexing. The factory returns `[remember, recall]` closures bound
+  to whatever namespace you pass (usually a session id or email), so every user
+  gets an isolated memory bucket automatically.
+
+- `PgPromptStore` — prompts live as rows in a `prompts` table. On first boot
+  the store seeds itself from `./prompts/*.md`; after that the database is the
+  source of truth, edited via API or SQL without rebuilding the image.
+
+- `PgIdentity` — per-user profile documents keyed by slug, with a many-to-one
+  email mapping (one user, multiple addresses). Typically loaded in your
+  `build_agent()` and prepended to the system prompt.
+
+- A migration runner (`strands-pg-migrate`) that applies numbered SQL files in
+  order. Framework migrations occupy 001–099; your agent's start at 100. No
+  ORM, no Alembic.
+
+- `make_app(agent_factory)` — a FastAPI factory with `/health`, `/chat`, and
+  optional `/prompts` endpoints. Convenience, not essence. Skip it if you have
+  your own HTTP layer.
+
+- `strands-pg-chat` — a small CLI that talks to `/chat` over HTTP. Useful for
+  iterating on prompts and tools without building a frontend.
+
+- Two Docker images: `strands-pg-db` (Postgres 17 + pgvector + PostGIS + pg_trgm)
+  and `strands-pg-agent` (Python + Strands + this library + uvicorn, with an
+  entrypoint that runs migrations on boot).
+
+## A minimum working agent
+
+```python
+# app.py
+from strands import Agent
+from strands.models.bedrock import BedrockModel
+from strands_pg import PgSessionManager, make_app, memory_tools
+
+def build_agent(session_id: str) -> Agent:
+    return Agent(
+        model=BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        system_prompt="You are a helpful assistant.",
+        tools=memory_tools(namespace=session_id),
+        session_manager=PgSessionManager(session_id=session_id),
+    )
+
+app = make_app(build_agent)
 ```
 
-## Why
+With `STRANDS_PG_DSN` pointing at a Postgres that has the framework migrations
+applied, `uvicorn app:app` gives you an agent with per-user memory and durable
+sessions at `POST /chat`. That's it.
 
-Running small purpose-built agents (one per domain — camping, finance, fitness, etc.) should be cheap to stand up. Instead of a polyglot stack (Redis + vector DB + queue + search + dashboards + bespoke API) per agent, `strands-pg` gives you one Postgres that does it all.
+## A realistic agent
 
-Inspired by the "Postgres for everything" thesis.
+Once you have domain data, the shape doesn't change much. You add migrations,
+tools, prompt files, and a few identity profiles:
+
+```
+my-agent/
+├── app.py
+├── prompts/
+│   ├── soul.md               # seeded into DB on first boot
+│   └── rules.md
+├── identities/
+│   └── brian.md              # YAML frontmatter + markdown body
+├── migrations/
+│   └── 100_orders.sql        # your domain tables
+├── tools/
+│   └── orders.py             # @tool search_orders, @tool create_order
+├── Dockerfile
+└── docker-compose.yml
+```
+
+`build_agent` pulls prompts and identity from the database, picks up the
+per-session memory tools, and adds your domain tools:
+
+```python
+from strands import Agent
+from strands.models.bedrock import BedrockModel
+from strands_pg import (
+    PgIdentity, PgPromptStore, PgSessionManager,
+    make_app, memory_tools,
+)
+from tools.orders import search_orders, create_order
+
+prompts = PgPromptStore();    prompts.seed_from_dir("./prompts")
+identities = PgIdentity();    identities.seed_from_dir("./identities")
+
+def build_agent(session_id: str) -> Agent:
+    system_prompt = prompts.assemble(["soul", "rules"])
+    identity = identities.get_by_email(session_id)
+    if identity:
+        system_prompt += f"\n\n## USER CONTEXT\n{identity.body}"
+
+    return Agent(
+        model=BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        system_prompt=system_prompt,
+        tools=[
+            search_orders,
+            create_order,
+            *memory_tools(namespace=session_id),
+        ],
+        session_manager=PgSessionManager(session_id=session_id),
+    )
+
+app = make_app(build_agent, prompt_store=prompts)
+```
+
+Two worked examples live in the repo:
+
+- `example/` — the minimum agent above, wrapped in a `docker-compose.yml` you
+  can copy.
+- `camping-db/` — a larger port of a real family-camping agent: 15,668 campsite
+  records with PostGIS spatial search and tsvector full-text, two user
+  identities mapped to multiple emails each, and five tools (`search_camps`,
+  `get_campsite`, `geocode`, `land_ownership`, `parcel_lookup`). Runs on port
+  8001 alongside `example/` on 8000.
+
+## What it doesn't do
+
+- **No horizontal scaling.** One Postgres per agent, one agent per container.
+  If your agent outgrows a single Postgres, you've outgrown this library.
+- **No cross-agent multi-tenancy.** Each agent has its own database. If two
+  agents need to share data, that's an explicit choice you make.
+- **No deployment layer.** Docker images are provided; how and where you run
+  them is up to you. The author happens to run each agent in its own Proxmox
+  LXC.
+- **Not a replacement for Strands tools.** `memory_tools` is the only piece
+  exposed as tools. Everything else is lifecycle/plumbing that couldn't be
+  tools if it tried.
+- **No agent-authoring DSL or no-code builder.** You write Python.
+
+## Install and run
+
+```bash
+# In your agent repo:
+pip install "strands-pg[bedrock]"
+
+# Apply framework + your agent's migrations against a running Postgres:
+STRANDS_PG_DSN=postgresql://strands:strands@localhost:5432/strands \
+  strands-pg-migrate --dir migrations
+
+# Run:
+uvicorn app:app --host 0.0.0.0 --port 8000
+
+# Chat with it from the terminal:
+strands-pg-chat --session-id you@example.com
+```
+
+If you want the whole stack up in one command, copy `example/docker-compose.yml`
+into your repo — it brings up Postgres and the agent together, runs migrations
+on boot, and exposes `/chat` on port 8000.
 
 ## Status
 
-Phase 1 MVP: session + memory + `/chat`. See `PLAN.md` for the roadmap.
+Pre-1.0. The primitives above work end-to-end and have been used to port a
+real agent (`camping-db/`). The API will shift as more agents are built on it;
+the `PgSessionManager` contract and the migration-numbering convention
+(framework 001–099, agents 100+) are stable.
 
 ## License
 
-MIT
+MIT.
