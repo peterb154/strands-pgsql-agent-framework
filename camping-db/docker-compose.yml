@@ -37,7 +37,8 @@ services:
     environment:
       STRANDS_PG_DSN: postgresql://strands:strands@db:5432/strands
     volumes:
-      - ${HOME}/.aws:/root/.aws:ro
+      # rw: boto3 refreshes SSO tokens into ~/.aws/sso/cache at runtime.
+      - ${HOME}/.aws:/root/.aws
       # legacy data mounted read-only so ingest.py can reach camping.db,
       # parcel_services.json, identities/*.md. Not required at runtime —
       # only for the one-shot ingest.
@@ -57,7 +58,11 @@ services:
         condition: service_healthy
     environment:
       PGRST_DB_URI: postgres://strands:strands@db:5432/strands
-      PGRST_DB_SCHEMAS: public
+      # Expose only the api schema. Keeps PostGIS's ~250 ST_* functions out
+      # of the OpenAPI doc, and keeps framework tables (sessions, memories,
+      # prompts, identities) entirely invisible to the HTTP surface.
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_EXTRA_SEARCH_PATH: "api, public"
       PGRST_DB_ANON_ROLE: web_anon
       PGRST_OPENAPI_SERVER_PROXY_URI: http://localhost:3000
     ports:

@@ -98,7 +98,7 @@ flowchart LR
     bedrock["AWS Bedrock<br/>Claude · Titan v2"]
 
     client -->|":8000 /chat"| agent
-    client -.->|":3000 data"| pgrst
+    client -.->|":3000 /{table}"| pgrst
     agent --> pg
     agent -->|inference<br/>embeddings| bedrock
     pgrst -->|read-only role| pg
@@ -311,6 +311,45 @@ Tables that aren't granted to `web_anon` stay invisible — `sessions`,
 `session_messages`, `memories`, `identities`, and `prompts` never leak out
 this surface. Skip the compose block entirely if you don't want an admin
 API; the agent works the same either way.
+
+### Keep PostGIS out of your OpenAPI doc
+
+PostGIS installs roughly 250 `ST_*` functions into `public`. If PostgREST is
+pointed at `public`, every one shows up in the auto-generated OpenAPI spec as
+an unreachable `/rpc/st_*` endpoint, which drowns out your real tables. The
+standard fix is to put agent-owned tables in a dedicated schema and point
+PostgREST there. In `camping-db/migrations/103_api_schema.sql`:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS api;
+
+ALTER TABLE public.camps            SET SCHEMA api;
+ALTER TABLE public.parcel_services  SET SCHEMA api;
+
+-- unqualified FROM clauses in tool SQL still resolve without code changes
+ALTER ROLE strands SET search_path = api, public;
+
+GRANT USAGE ON SCHEMA api TO web_anon;
+-- SELECT grants follow the tables via SET SCHEMA
+```
+
+Matching compose env:
+
+```yaml
+PGRST_DB_SCHEMAS: api
+PGRST_DB_EXTRA_SEARCH_PATH: "api, public"
+```
+
+After this, `curl localhost:3000/` returns just `camps` and `parcel_services`
+under `definitions` and zero `/rpc/*` entries. PostGIS stays in `public` where
+the tool SQL can still reach it (`ST_DWithin`, `ST_MakePoint`, etc.) without
+being exposed to the HTTP surface. The migration also adds a DDL event trigger
+that fires `NOTIFY pgrst, 'reload schema'` after any schema change, so you
+don't need to `docker restart postgrest` every time a new migration lands.
+
+Framework tables (`sessions`, `memories`, `prompts`, `identities`) stay in
+`public` — they're never exposed to PostgREST anyway, and moving them would
+churn the session-manager code for no benefit.
 
 ## What it doesn't do
 
