@@ -12,6 +12,16 @@ Postgres-backed implementations of the pieces every agent tends to need —
 session manager, memory store, prompt store, identity store — and a few
 conveniences on top (a FastAPI factory, a CLI, Docker images).
 
+> **If you're running purely in AWS, look at Amazon Bedrock AgentCore first.**
+> It's the first-party managed runtime for Strands agents — hosting, session
+> persistence, memory, identity, and operational concerns are handled for you
+> in AWS-managed infrastructure, and it's almost certainly the right choice if
+> that's where your agent is going to live. `strands-pg` is for the cases
+> AgentCore doesn't cover: self-hosting in your own VPC, on a Proxmox LXC, in
+> a homelab, on a laptop, or anywhere else the agent needs to run outside an
+> AWS-managed runtime. You still get Bedrock for inference and embeddings;
+> you just own the rest of the stack.
+
 It exists because any Strands agent — narrow specialist or general assistant —
 eventually needs a handful of things beyond the LLM and its tools:
 
