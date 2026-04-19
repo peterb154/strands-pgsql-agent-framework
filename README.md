@@ -17,7 +17,7 @@ conveniences on top (a FastAPI factory, a CLI, Docker images).
 > persistence, memory, identity, and operational concerns are handled for you
 > in AWS-managed infrastructure, and it's almost certainly the right choice if
 > that's where your agent is going to live. `strands-pg` is for the cases
-> AgentCore doesn't cover: self-hosting in your own VPC, on a Proxmox LXC, in
+> AgentCore doesn't cover: self-hosting on your own VPS, on a Proxmox LXC, in
 > a homelab, on a laptop, or anywhere else the agent needs to run outside an
 > AWS-managed runtime. You still get Bedrock for inference and embeddings;
 > you just own the rest of the stack.
