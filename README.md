@@ -51,6 +51,62 @@ The three extensions, briefly:
   full-text search — tsvector is stemmed word matching, pg_trgm is
   character-level fuzziness.
 
+## How it fits together
+
+At runtime, a deployed agent is three containers (two if you skip the admin
+API) talking to Bedrock for inference and embeddings:
+
+```mermaid
+flowchart LR
+    client["HTTP client<br/>(browser, CLI,<br/>email webhook)"]
+
+    subgraph compose["docker-compose"]
+        direction LR
+        agent["agent<br/><br/>FastAPI /chat, /prompts<br/>Strands Agent + tools"]
+        pg[("db<br/><br/>Postgres 17<br/>pgvector · PostGIS · pg_trgm")]
+        pgrst["postgrest<br/>(optional)<br/><br/>auto-CRUD from schema"]
+    end
+
+    bedrock["AWS Bedrock<br/>Claude · Titan v2"]
+
+    client -->|":8000 /chat"| agent
+    client -.->|":3000 data"| pgrst
+    agent --> pg
+    agent -->|inference<br/>embeddings| bedrock
+    pgrst -->|read-only role| pg
+```
+
+A `POST /chat` walks this path — prompts and identity come from the database
+before the model sees anything, tool calls hit Postgres (and sometimes
+external APIs), and the whole exchange is persisted as JSONB by
+`PgSessionManager` so the next request picks up where this one left off:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant F as FastAPI /chat
+    participant B as build_agent(session_id)
+    participant PG as Postgres
+    participant A as Strands Agent
+    participant BR as Bedrock
+
+    C->>F: POST {session_id, message}
+    F->>B: build (or fetch cached)
+    B->>PG: SELECT prompts, identity by email
+    B-->>A: Agent(system_prompt, tools, session_manager)
+    A->>PG: load session history (PgSessionManager)
+    A->>BR: invoke model with history
+    BR-->>A: tool_use: search_camps(...)
+    A->>PG: SELECT ... ST_DWithin(...) via tool
+    PG-->>A: rows
+    A->>BR: continue with tool result
+    BR-->>A: final text
+    A->>PG: append_message + sync_agent (JSONB)
+    A-->>F: AgentResult
+    F-->>C: {response}
+```
+
 ## What's included
 
 - `PgSessionManager` — a `SessionManager` subclass that persists conversations
