@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v0.1.2 (2026-04-19)
+
+### Bug Fixes
+
+- **templates**: Deploy-to-production guide with IAM least-privilege policy
+  ([`992b49d`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/992b49d85d43b366f7c15504f9424778b08d0723))
+
+The stamped agent's README had no guidance on what real deployment looks like. This adds a
+  "Deploying to production" section covering:
+
+1. IAM user + least-privilege policy JSON — scoped to bedrock:InvokeModel on just the Claude
+  inference profile, the underlying foundation model, and the Titan embed model. Calls out the
+  inference-profile-vs-FM-ARN gotcha explicitly (you need both, not just one). 2. The .env entries
+  for static IAM user keys. 3. The ~/.aws mount that needs to be deleted from docker-compose.yml
+  (the bind fails on hosts without ~/.aws, which is every fresh LXC). 4. A note on rotating the
+  access key.
+
+Complements the existing .env.example Option A (laptop dev with SSO-backed profile) vs Option B
+  (production with static keys) distinction.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.1.1 (2026-04-19)
 
 ### Bug Fixes
