@@ -2,6 +2,13 @@
 
 Postgres-backed primitives for building purpose-built Strands agents.
 
+> **What's Strands?** AWS's open-source Python SDK for building multi-turn
+> LLM agents — [`strands-agents/sdk-python`](https://github.com/strands-agents/sdk-python).
+> It's deliberately lean (small surface area, model-agnostic, no DSL or base
+> class hierarchy to inherit from), which is exactly why this library pairs
+> with it: `strands-pg` stays out of `Agent`'s way and just hands you
+> implementations for the pieces that don't come in the box.
+
 ## What this is
 
 `strands-pg` is a regular Python library. You `pip install` it, import the
