@@ -74,6 +74,78 @@ CREATE TABLE IF NOT EXISTS orders (
 
 `docker compose up --build` reapplies migrations on boot.
 
+## Deploying to production
+
+For a real deployment (Proxmox LXC, VPS, anything without your laptop's
+`~/.aws`), use a dedicated IAM user with least privilege. Don't reuse your
+admin credentials. Don't ship a profile-based config.
+
+### 1. IAM user + least-privilege policy
+
+Create a fresh IAM user named after this agent (e.g. `strands-pg-my-agent`)
+and attach a policy like this. Scope it narrowly — just the models you
+actually invoke, nothing else:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeClaudeAndTitan",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0",
+        "arn:aws:bedrock:us-east-1:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      ]
+    }
+  ]
+}
+```
+
+Two notes:
+
+- `STRANDS_PG_MODEL_ID=us.anthropic...` is a Bedrock **inference profile**,
+  not a raw foundation model. Invoking it needs permissions on **both** the
+  profile ARN *and* the foundation-model ARNs the profile routes to. The
+  example above grants both. Leave out the FM ARNs and you'll get
+  `AccessDeniedException` at runtime.
+- Titan v2 embeddings go through the foundation-model ARN directly (no
+  inference profile). Keep that line even if you only chat with Claude.
+
+Generate an access key pair for the user. Save the secret somewhere safe —
+you can't view it again after this screen.
+
+### 2. Put the keys in `.env` on the host
+
+```bash
+STRANDS_PG_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIAxxxxxxxxxxxxxxxx
+AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### 3. Drop the `~/.aws` mount from `docker-compose.yml`
+
+The bind mount fails to start the container on a host that doesn't have
+`~/.aws`. Delete this block from the `agent` service:
+
+```yaml
+    volumes:
+      - ${HOME}/.aws:/root/.aws
+```
+
+### 4. Rotate
+
+Rotate the access key on a schedule — quarterly minimum. The IAM user
+has no other permissions, so the blast radius of a leak is limited to
+Bedrock usage on the specific models above (an attacker can burn your
+budget, not much else). Still, rotate.
+
 ## Updating from upstream
 
 Re-run the installer into a scratch directory and `diff -r` against this one:
