@@ -46,5 +46,23 @@ services:
       - "8001:8000"
     restart: unless-stopped
 
+  # Optional: auto-CRUD for tables granted to web_anon (see
+  # migrations/102_pgrst_role.sql). Remove this block if you don't want an
+  # admin/data API. PostgREST is a Haskell binary; it runs next to Postgres,
+  # not inside the agent process.
+  postgrest:
+    image: postgrest/postgrest:v12.2.0
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://strands:strands@db:5432/strands
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_OPENAPI_SERVER_PROXY_URI: http://localhost:3000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
 volumes:
   camping_pgdata:

@@ -29,6 +29,13 @@ thesis: one boring database with a few extensions is enough for a fleet of
 small, narrow agents, and the wiring between it and Strands is worth writing
 once.
 
+Inference and embeddings go through **AWS Bedrock** by default — Claude
+(Sonnet/Opus/Haiku) for the agent's reasoning, Titan Text Embeddings v2 for
+memory vectors. Bedrock is the default because it keeps billing in one place
+and avoids per-provider API key sprawl, but it's not load-bearing: pass any
+Strands `Model` into `Agent(model=...)` and swap `PgMemoryStore(embedder=...)`
+if you want OpenAI, Ollama, a local model, or anything else.
+
 The three extensions, briefly:
 
 - **pgvector** — adds a `vector` column type and similarity-search operators
@@ -77,6 +84,15 @@ The three extensions, briefly:
 - Two Docker images: `strands-pg-db` (Postgres 17 + pgvector + PostGIS + pg_trgm)
   and `strands-pg-agent` (Python + Strands + this library + uvicorn, with an
   entrypoint that runs migrations on boot).
+
+- An optional **PostgREST** sidecar pattern (shown in `camping-db/`). PostgREST
+  is a standalone Haskell service that auto-generates a REST API from your
+  database schema — filtered GET, JSON POST/PATCH/DELETE, OpenAPI spec, JWT
+  auth — for the tables you explicitly grant to a scoped role. It's how
+  `strands-pg` handles domain-data CRUD (`/camps`, `/parcel_services`, etc.)
+  without reinventing a handler per table. `/chat` stays hand-written in
+  FastAPI because PostgREST can't run an LLM; everything that's just tables
+  delegates to PostgREST.
 
 ## A minimum working agent
 
@@ -165,7 +181,52 @@ Two worked examples live in the repo:
   records with PostGIS spatial search and tsvector full-text, two user
   identities mapped to multiple emails each, and five tools (`search_camps`,
   `get_campsite`, `geocode`, `land_ownership`, `parcel_lookup`). Runs on port
-  8001 alongside `example/` on 8000.
+  8001 alongside `example/` on 8000, plus a PostgREST sidecar on 3000.
+
+## Data APIs via PostgREST
+
+`make_app` handles the *agent* endpoint (`/chat`) and some admin plumbing
+(`/prompts`). Anything else — listing/filtering/editing rows in your domain
+tables — is delegated to [PostgREST](https://postgrest.org), mounted as a
+third Docker service that points at the same database:
+
+```yaml
+postgrest:
+  image: postgrest/postgrest:v12.2.0
+  environment:
+    PGRST_DB_URI: postgres://strands:strands@db:5432/strands
+    PGRST_DB_SCHEMAS: public
+    PGRST_DB_ANON_ROLE: web_anon
+  ports: ["3000:3000"]
+```
+
+A small migration grants `web_anon` SELECT on the tables you want browsable:
+
+```sql
+CREATE ROLE web_anon NOLOGIN;
+GRANT USAGE ON SCHEMA public TO web_anon;
+GRANT SELECT ON TABLE camps, parcel_services TO web_anon;
+GRANT web_anon TO strands;
+```
+
+You now have:
+
+```bash
+# Filtered GET with PostgREST's query syntax:
+curl 'localhost:3000/camps?state=eq.MT&type=eq.NF&limit=5&select=camp,town,lat,lon'
+
+# Row count via the Prefer header:
+curl -I -H 'Prefer: count=exact' 'localhost:3000/camps?state=eq.MT'
+# Content-Range: 0-552/553
+
+# OpenAPI spec:
+curl localhost:3000/
+```
+
+Tables that aren't granted to `web_anon` stay invisible — `sessions`,
+`session_messages`, `memories`, `identities`, and `prompts` never leak out
+this surface. Skip the compose block entirely if you don't want an admin
+API; the agent works the same either way.
 
 ## What it doesn't do
 
@@ -185,7 +246,7 @@ Two worked examples live in the repo:
 
 ```bash
 # In your agent repo:
-pip install "strands-pg[bedrock]"
+pip install "strands-pg[bedrock]"   # brings boto3 for Bedrock model + Titan embeddings
 
 # Apply framework + your agent's migrations against a running Postgres:
 STRANDS_PG_DSN=postgresql://strands:strands@localhost:5432/strands \
