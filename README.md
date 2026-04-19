@@ -11,13 +11,16 @@ Postgres-backed primitives for building purpose-built Strands agents.
 
 ## What this is
 
-`strands-pg` is a regular Python library. You `pip install` it, import the
-pieces you want, and call them from your own code. There's no base class to
-extend, no runtime to slot into, no predefined lifecycle. Your agent is a
-regular `strands.Agent` that you construct yourself; this library supplies
-Postgres-backed implementations of the pieces every agent tends to need —
-session manager, memory store, prompt store, identity store — and a few
-conveniences on top (a FastAPI factory, a CLI, Docker images).
+`strands-pg` ships as a source stamp, not a package. You run a one-line
+installer that copies the framework source and a starter agent shell into a
+new directory, and from that point the code is yours — edit it, fork it,
+delete the parts you don't need. There's no base class to extend, no runtime
+to slot into, no predefined lifecycle, no pip dependency resolving a
+registry in the background. Your agent is a regular `strands.Agent` that you
+construct yourself; this library supplies Postgres-backed implementations of
+the pieces every agent tends to need — session manager, memory store, prompt
+store, identity store — and a few conveniences on top (a FastAPI factory,
+a CLI, Docker images).
 
 > **If you're running purely in AWS, look at Amazon Bedrock AgentCore first.**
 > It's the first-party managed runtime for Strands agents — hosting, session
@@ -161,16 +164,17 @@ sequenceDiagram
   email mapping (one user, multiple addresses). Typically loaded in your
   `build_agent()` and prepended to the system prompt.
 
-- A migration runner (`strands-pg-migrate`) that applies numbered SQL files in
-  order. Framework migrations occupy 001–099; your agent's start at 100. No
-  ORM, no Alembic.
+- A migration runner (`python -m strands_pg.migrate`) that applies numbered
+  SQL files in order. Framework migrations occupy 001–099; your agent's
+  start at 100. No ORM, no Alembic. Called automatically by the container
+  entrypoint on boot.
 
 - `make_app(agent_factory)` — a FastAPI factory with `/health`, `/chat`, and
   optional `/prompts` endpoints. Convenience, not essence. Skip it if you have
   your own HTTP layer.
 
-- `strands-pg-chat` — a small CLI that talks to `/chat` over HTTP. Useful for
-  iterating on prompts and tools without building a frontend.
+- A chat CLI (`python -m strands_pg.cli`) that talks to `/chat` over HTTP.
+  Useful for iterating on prompts and tools without building a frontend.
 
 - Two Docker images: `strands-pg-db` (Postgres 17 + pgvector + PostGIS + pg_trgm)
   and `strands-pg-agent` (Python + Strands + this library + uvicorn, with an
@@ -404,26 +408,74 @@ churn the session-manager code for no benefit.
   tools if it tried.
 - **No agent-authoring DSL or no-code builder.** You write Python.
 
-## Install and run
+## Install
+
+You don't. There's no package to install. This project follows the
+[shadcn/ui](https://ui.shadcn.com/) distribution model — a one-shot bash
+installer copies the framework source into your new agent directory, and
+from that point **you own every file**. No `pip install strands-pg`, no
+runtime dependency on this repo, no surprise updates pulling in something
+you didn't vet.
+
+Why this matters: pip and npm have become supply-chain liabilities. Every
+`pip install` resolves transitive dependencies from a registry that could
+(and occasionally does) serve you compromised code. Copying a pinned
+release once, reviewing it, and owning it is a narrower attack surface.
 
 ```bash
-# In your agent repo:
-pip install "strands-pg[bedrock]"   # brings boto3 for Bedrock model + Titan embeddings
+# Latest tagged release:
+curl -sSL https://raw.githubusercontent.com/peterb154/strands-pgsql-agent-framework/main/install.sh \
+  | bash -s -- my-agent
 
-# Apply framework + your agent's migrations against a running Postgres:
-STRANDS_PG_DSN=postgresql://strands:strands@localhost:5432/strands \
-  strands-pg-migrate --dir migrations
+# Pinned version (recommended — both installer and framework locked to v0.1.0):
+curl -sSL https://raw.githubusercontent.com/peterb154/strands-pgsql-agent-framework/v0.1.0/install.sh \
+  | bash -s -- my-agent --ref v0.1.0
 
-# Run:
-uvicorn app:app --host 0.0.0.0 --port 8000
-
-# Chat with it from the terminal:
-strands-pg-chat --session-id you@example.com
+# Paranoid mode — inspect before running:
+curl -sSL https://raw.githubusercontent.com/peterb154/strands-pgsql-agent-framework/main/install.sh -o install.sh
+less install.sh
+bash install.sh my-agent
 ```
 
-If you want the whole stack up in one command, copy `example/docker-compose.yml`
-into your repo — it brings up Postgres and the agent together, runs migrations
-on boot, and exposes `/chat` on port 8000.
+What lands in `my-agent/`:
+
+```text
+my-agent/
+├── strands_pg/          # vendored framework source — yours to edit
+├── migrations/          # framework 001-003 SQL; add your 100+ here
+├── prompts/             # soul.md + rules.md starters, seeded into DB
+├── tools/               # your domain @tool functions go here
+├── db/Dockerfile        # Postgres 17 + pgvector + PostGIS
+├── Dockerfile           # python:3.13 + your app
+├── docker-compose.yml   # agent + db; optional PostgREST block (commented)
+├── entrypoint.sh        # waits for PG, applies migrations, execs uvicorn
+├── app.py               # the Agent you build — start editing here
+├── requirements.txt
+├── .env.example
+└── README.md            # quickstart for this stamped agent
+```
+
+Run it:
+
+```bash
+cd my-agent
+cp .env.example .env     # edit AWS_PROFILE to one with Bedrock access
+docker compose up --build
+curl -s localhost:8000/health
+```
+
+## Updating
+
+There's no auto-update. If we ship a v0.2.0 and you want to pull changes:
+
+```bash
+# Re-stamp into a scratch directory and diff against your tree:
+bash install.sh /tmp/fresh-stamp --ref v0.2.0
+diff -r /tmp/fresh-stamp my-agent
+```
+
+Apply what you want, skip what you don't. `my-agent/.strands-pg-ref` records
+which version you stamped from originally.
 
 ## Status
 
