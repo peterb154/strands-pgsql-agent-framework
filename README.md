@@ -57,7 +57,8 @@ and avoids per-provider API key sprawl, but it's not load-bearing: pass any
 Strands `Model` into `Agent(model=...)` and swap `PgMemoryStore(embedder=...)`
 if you want OpenAI, Ollama, a local model, or anything else.
 
-The three extensions, briefly:
+Four pieces do most of the heavy lifting — three extensions inside Postgres,
+plus one sidecar service that lives beside it:
 
 - **pgvector** — adds a `vector` column type and similarity-search operators
   (cosine distance, L2, inner product) plus HNSW and IVFFlat index types for
@@ -71,6 +72,12 @@ The three extensions, briefly:
   `similarity()` gives a score, typos get tolerated. Complements tsvector
   full-text search — tsvector is stemmed word matching, pg_trgm is
   character-level fuzziness.
+- **PostgREST** (sidecar, not an extension) — a small Haskell service that
+  introspects the schema and auto-generates a filtered REST API from it.
+  Grant `SELECT` on a table to a scoped role and it's immediately browsable
+  at `/table_name?column=eq.value`; everything else stays invisible. Saves
+  you from hand-rolling a FastAPI handler per table for admin/data CRUD.
+  See the [Data APIs via PostgREST](#data-apis-via-postgrest) section below.
 
 ## How it fits together
 
