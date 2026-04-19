@@ -4,9 +4,13 @@ Postgres-backed primitives for building purpose-built Strands agents.
 
 ## What this is
 
-A library, not a framework in the "inherit from `BaseAgent`" sense. You install it,
-apply its migrations, and use the pieces you need. Your agent is still a regular
-`strands.Agent` you build yourself.
+`strands-pg` is a regular Python library. You `pip install` it, import the
+pieces you want, and call them from your own code. There's no base class to
+extend, no runtime to slot into, no predefined lifecycle. Your agent is a
+regular `strands.Agent` that you construct yourself; this library supplies
+Postgres-backed implementations of the pieces every agent tends to need —
+session manager, memory store, prompt store, identity store — and a few
+conveniences on top (a FastAPI factory, a CLI, Docker images).
 
 It exists because a small purpose-built agent — the kind you write to solve one
 problem well, not a general assistant — needs a handful of things beyond the LLM
