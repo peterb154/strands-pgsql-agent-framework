@@ -1,6 +1,37 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-04-20)
+
+### Features
+
+- Stamped bootstrap-lxc.sh + chromium sidecar stanza
+  ([`6c4a7bd`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/6c4a7bd1ec9bd2deb99cb1b1e453b496ec6a322c))
+
+Two additions to the stamped agent template:
+
+templates/agent/bootstrap-lxc.sh: Idempotent host prep for a fresh Debian/Ubuntu LXC. Installs
+  Docker engine + compose plugin via get.docker.com, writes daemon.json with log rotation, installs
+  baseline tools (git, curl, jq), and adds a systemd unit that auto-starts any
+  /opt/*/docker-compose.yml stack on reboot. Includes a preflight check that warns if nesting=1 /
+  keyctl=1 features are missing on a Proxmox LXC (Docker won't work without them).
+
+The script is stamped INTO the agent repo (not hosted at strands-pg's main) so each agent owns it.
+  When a specific agent needs unusual host setup (kernel module, sysctl, extra packages), edit this
+  file in place and commit — it's a Dockerfile-equivalent for the LXC.
+
+templates/agent/docker-compose.yml: Adds a commented-out chromium sidecar stanza
+  (browserless/chrome) with usage notes. Agents that need a browser tool for scraping/automation
+  (camping-db's GIS workflow, for example) uncomment and go. Comes with shm_size 2gb —
+  non-negotiable for headless Chrome.
+
+templates/agent/README.md: New "First time on a fresh host?" section pointing at bootstrap-lxc.sh.
+
+templates/agent/requirements.txt: (already updated in the SSE commit) — sse-starlette pulled in.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.2.0 (2026-04-20)
 
 ### Features
