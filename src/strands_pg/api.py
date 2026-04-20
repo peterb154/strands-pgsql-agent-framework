@@ -9,11 +9,12 @@ or rebuild per request; default behavior caches in-process.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 from strands_pg.prompts import PgPromptStore
 
@@ -87,6 +88,19 @@ def make_app(
 
         return ChatResponse(session_id=req.session_id, response=str(result))
 
+    @app.post("/chat/stream")
+    async def chat_stream(req: ChatRequest) -> EventSourceResponse:
+        """Same as /chat but streams events as Server-Sent Events.
+
+        Event shape is normalized across Strands SDK versions:
+          - ``event: text``       text delta chunks
+          - ``event: thinking``   reasoning-text deltas (when model streams them)
+          - ``event: tool_use``   tool name being invoked
+          - ``event: done``       terminal event (empty data)
+          - ``event: error``      any exception (data = error message)
+        """
+        return EventSourceResponse(_stream_agent(get_agent, req))
+
     if prompt_store is not None:
 
         @app.get("/prompts", response_model=list[PromptOut])
@@ -115,3 +129,33 @@ def make_app(
             return {"deleted": True}
 
     return app
+
+
+async def _stream_agent(
+    get_agent: Callable[[str], Any], req: ChatRequest
+) -> AsyncIterator[dict[str, str]]:
+    """Bridge Strands' native stream_async into normalized SSE events.
+
+    Strands emits dict events with keys like ``data``, ``reasoningText``,
+    ``current_tool_use``, ``complete``. We collapse those into a stable
+    ``{event, data}`` shape so SSE consumers don't break when the SDK's
+    internal event shape evolves.
+    """
+    try:
+        agent = get_agent(req.session_id)
+        seen_tool_ids: set[str] = set()
+        async for ev in agent.stream_async(req.message):
+            if "reasoningText" in ev and ev["reasoningText"]:
+                yield {"event": "thinking", "data": ev["reasoningText"]}
+            elif "current_tool_use" in ev:
+                tool = ev["current_tool_use"] or {}
+                tool_id = tool.get("toolUseId") or ""
+                if tool_id and tool_id not in seen_tool_ids:
+                    seen_tool_ids.add(tool_id)
+                    yield {"event": "tool_use", "data": tool.get("name", "") or ""}
+            elif "data" in ev and ev["data"]:
+                yield {"event": "text", "data": ev["data"]}
+        yield {"event": "done", "data": ""}
+    except Exception as exc:  # noqa: BLE001 — surface via SSE error event
+        logger.exception("/chat/stream failed for session_id=%s", req.session_id)
+        yield {"event": "error", "data": str(exc)}

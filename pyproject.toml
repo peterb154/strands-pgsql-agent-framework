@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "Alice Rider", email = "brian.peterson@cloudshift.cc" },
+    { name = "Brian Peterson", email = "brian.peterson@cloudshift.cc" },
 ]
 dependencies = [
     "strands-agents>=1.13.0",
@@ -16,6 +16,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "httpx>=0.27",
+    "sse-starlette>=2.1",
 ]
 
 [project.optional-dependencies]
