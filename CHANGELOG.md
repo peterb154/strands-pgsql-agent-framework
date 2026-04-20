@@ -1,6 +1,37 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-04-20)
+
+### Features
+
+- Sse streaming /chat/stream endpoint in make_app
+  ([`40dc9f4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/40dc9f49b759b773daeffc55713b117818986f53))
+
+Adds a second chat endpoint alongside /chat that streams Strands agent events as Server-Sent Events.
+  Wraps agent.stream_async into normalized event shapes so SSE consumers stay stable across SDK
+  upgrades:
+
+event: text text delta chunks
+
+event: thinking reasoningText deltas (when model emits them)
+
+event: tool_use tool name, emitted once per toolUseId
+
+event: done terminal (empty data)
+
+event: error any exception, data = message
+
+Dependencies: - sse-starlette>=2.1 added to framework pyproject + template requirements.txt
+
+Also restores pyproject.toml authors to "Brian Peterson" — was incorrectly scrubbed to "Alice Rider"
+  in the earlier PII cleanup pass. The alice/bob personas were intended only for the camping-db/
+  walkthrough identities, not the package metadata (git commit authorship is elsewhere and was
+  deliberately left alone per user call).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.1.3 (2026-04-20)
 
 ### Bug Fixes
