@@ -19,7 +19,7 @@ USFS_URL = (
     "https://apps.fs.usda.gov/arcx/rest/services"
     "/EDW/EDW_BasicOwnership_01/MapServer/0/query"
 )
-USER_AGENT = "strands-pg/camping-db (+https://github.com/brianpeterson/strands-pgsql-agent-framework)"
+USER_AGENT = "strands-pg/camping-db (+https://github.com/peterb154/strands-pgsql-agent-framework)"
 
 _AGENCY_NAMES = {
     "BLM": "Bureau of Land Management",
@@ -43,7 +43,7 @@ def geocode(place_name: str) -> str:
     for a radius search.
 
     Args:
-        place_name: Place name to geocode (e.g. "Mountain West KS", "Moab UT").
+        place_name: Place name to geocode (e.g. "Topeka KS", "Moab UT").
     """
     try:
         resp = httpx.get(

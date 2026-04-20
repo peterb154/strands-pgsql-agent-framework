@@ -22,7 +22,7 @@ from strands import tool
 from strands_pg._pool import get_pool
 
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
-USER_AGENT = "strands-pg/camping-db (+https://github.com/brianpeterson/strands-pgsql-agent-framework)"
+USER_AGENT = "strands-pg/camping-db (+https://github.com/peterb154/strands-pgsql-agent-framework)"
 
 
 @tool
