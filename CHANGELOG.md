@@ -1,12 +1,30 @@
 # CHANGELOG
 
 
+## v0.1.3 (2026-04-20)
+
+### Bug Fixes
+
+- Restore over-scrubbed search example + correct User-Agent URL
+  ([`29adbca`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/29adbca9abb7667a3eeb8bc1146864cd675a3907))
+
+Two small cleanups after the PII scrub rewrite:
+
+- camping-db/tools/geo.py: the geocode docstring example read "Mountain West KS" after the scrub
+  (string replacement accidentally rewrote a city name inside a search example). Fixed to "Topeka
+  KS". - camping-db/tools/{geo,parcels}.py: User-Agent string pointed at
+  github.com/brianpeterson/strands-pgsql-agent-framework (a placeholder that was wrong from day one
+  — the real repo is peterb154/...). Fixed to the actual URL.
+
+Neither of these is PII. Just cleanup from the rewrite pass.
+
+
 ## v0.1.2 (2026-04-19)
 
 ### Bug Fixes
 
 - **templates**: Deploy-to-production guide with IAM least-privilege policy
-  ([`992b49d`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/992b49d85d43b366f7c15504f9424778b08d0723))
+  ([`8a80181`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/8a80181ca0d2104e8393398254b12915c0159243))
 
 The stamped agent's README had no guidance on what real deployment looks like. This adds a
   "Deploying to production" section covering:
@@ -29,7 +47,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ### Bug Fixes
 
 - **templates**: .env.example shows both SSO profile and static IAM key paths
-  ([`0c043bd`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/0c043bd5006f12682ecef746560ad2cddfd5ecc1))
+  ([`272c7ba`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/272c7bab2df7eded0f8d05487e104201e28d6ebc))
 
 Previous template only showed AWS_PROFILE=default, which works on a laptop with SSO but fails the
   moment someone deploys to a VPS or fresh LXC that has no ~/.aws. Adds a second documented pattern
@@ -43,7 +61,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ### Chores
 
 - **ci**: Bump actions/checkout v4 -> v6
-  ([`3982387`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/398238749c2ef4a7d5d249b9efca0eb8db216183))
+  ([`f9313b4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/f9313b45aa4f3c205e4bbb9a65ff8d9155f7905e))
 
 Silences the Node.js 20 deprecation warning surfaced in the first workflow run. v6 runs on Node.js
   24. Same interface we use (fetch-depth, token).
@@ -53,7 +71,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ### Continuous Integration
 
 - Semantic-release workflow + credit source talk in README
-  ([`ac02a10`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/ac02a10c81fda656c53f6ef87dc5d04073fe39d3))
+  ([`0734f1a`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/0734f1ae35de862115278d79ee1a97aad5c07a46))
 
 Two things:
 
@@ -80,7 +98,7 @@ This commit is `ci:` + `docs:` so it won't trigger a release — the first real 
 ### Bug Fixes
 
 - Pgvector binding + compose env + backlog deploy webhook
-  ([`1360570`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/1360570408e6c248c2ef6a1dc47ad93f12ca47a5))
+  ([`996b0cf`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/996b0cfd372500802475201c9bb595e12e102915))
 
 - memory.py: cast %s::vector explicitly so plain Python list embeddings bind correctly.
   register_vector adapts numpy arrays (and Vector objects) but not lists, which landed as double
@@ -93,7 +111,7 @@ This commit is `ci:` + `docs:` so it won't trigger a release — the first real 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - **camping-db**: Isolate agent tables in api schema, clean up OpenAPI
-  ([`9e933ba`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/9e933baca4ea92ca68e7a82f2297d1effd1ff151))
+  ([`db3c5b6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/db3c5b69d048971028d676859fc2ecbdfacd55c8))
 
 Before: PostgREST pointed at public -> OpenAPI listed ~250 unreachable /rpc/st_* entries from
   PostGIS alongside our 2 real tables.
@@ -130,7 +148,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ### Documentation
 
 - Acknowledge AgentCore as the preferred AWS-native path
-  ([`0d797d3`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/0d797d3ceaf894b67ad63437104f22ec1da1227f))
+  ([`2740dd6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/2740dd6ba5640291dd9f9651771deba9f68a0ad5))
 
 Adds a callout up front: if you're running in AWS, use Amazon Bedrock AgentCore. This library is for
   the cases AgentCore doesn't cover — self-hosted VPC, Proxmox LXC, homelab, laptop, anywhere off
@@ -140,7 +158,7 @@ Adds a callout up front: if you're running in AWS, use Amazon Bedrock AgentCore.
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Add mermaid diagrams for runtime topology + /chat sequence
-  ([`d483d6a`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/d483d6a88c584e19e3fe241ce76c64da0b83a0fb))
+  ([`38d45f7`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/38d45f7cf8730cbf0c84dbb6ba2bbb8409e35be9))
 
 Two diagrams near the top of the README:
 
@@ -154,7 +172,7 @@ Two diagrams near the top of the README:
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Brief "what's Strands?" aside under the tagline
-  ([`48f933c`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/48f933c60cb8812ce88fbc8e3ef9664cea432d71))
+  ([`302e556`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/302e556e013003d22978ddfcf192e140b82122fa))
 
 A reader landing on the README sees "Strands agents" in the tagline but has to guess what Strands
   is. Adds a two-sentence blockquote with the link to strands-agents/sdk-python, names the thing
@@ -164,7 +182,7 @@ A reader landing on the README sees "Strands agents" in the tagline but has to g
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Clarify the lead paragraph
-  ([`56dc1e4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/56dc1e45da005dccf857532538c29650b0d61d59))
+  ([`3859610`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/38596102890dea834fe1281f16722b97c1f4c5ff))
 
 Replace the "library, not a framework in the 'inherit from BaseAgent' sense" phrasing (which assumes
   the reader already knows that shorthand) with a plain description: it's a Python library, you
@@ -174,7 +192,7 @@ Replace the "library, not a framework in the 'inherit from BaseAgent' sense" phr
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Decouple the primitives from the "small agent" framing
-  ([`2a27926`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/2a27926f81a95667261a9d5672e539ed02fb394a))
+  ([`8f86692`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/8f866927075d775ef6d85a54e054ee014df1d098))
 
 The library's primitives (session manager, memory, prompts, identity) are useful for any Strands
   agent regardless of scope. Only the deployment pattern (one Postgres per agent, no horizontal
@@ -184,7 +202,7 @@ The library's primitives (session manager, memory, prompts, identity) are useful
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Define pgvector, PostGIS, pg_trgm in README
-  ([`79b71af`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/79b71af2bc569e5288823cafd3218dabc2a253c6))
+  ([`97798e4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/97798e46bfd3d6afc78c7ab439564420707fc03b))
 
 Short aside explaining each extension's role — vector similarity search, spatial queries, trigram
   fuzzy text matching — so a reader new to the Postgres extension ecosystem doesn't have to go look
@@ -194,7 +212,7 @@ Short aside explaining each extension's role — vector similarity search, spati
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Document PostgREST's machine-readable OpenAPI at GET /
-  ([`792ebd7`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/792ebd7926f47444209d043daa52075197d7bb17))
+  ([`d2fead5`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/d2fead56310e60d9f83f92afc1331b66f178ec6b))
 
 Previously the README mentioned "curl localhost:3000/" as a one-liner in passing. Expands it to a
   named subsection explaining what the spec contains (definitions per exposed table, paths per
@@ -207,7 +225,7 @@ Includes a small jq example for pulling just the exposed table names.
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Expand the "what's compelling" list to include PostgREST
-  ([`820fc21`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/820fc21787f8d8fc74b9734b9eba30c87ab70312))
+  ([`7c8b54d`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/7c8b54dd293fb422ace35250d32b712853c0a16f))
 
 Reframe the "three extensions, briefly" block as "four pieces do most of the heavy lifting — three
   extensions inside Postgres, plus one sidecar beside it." Adds PostgREST to the list with a short
@@ -219,7 +237,7 @@ PostgREST isn't technically a Postgres extension (it's a separate Haskell servic
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Rewrite README as a library intro, not a framework pitch
-  ([`59916c2`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/59916c2c8bd52fee543f4a7c53657be2c6727105))
+  ([`fe58175`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/fe58175b42a509e63a9edc7bd4a908b4b22e278e))
 
 Reframes strands-pg as a library of Postgres-backed primitives for Strands agents plus the minimum
   lifecycle glue that can't be tools. Leads with the problem (plumbing cost for purpose-built
@@ -229,7 +247,7 @@ Reframes strands-pg as a library of Postgres-backed primitives for Strands agent
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Vpc -> VPS in the AgentCore callout
-  ([`9a6190c`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/9a6190c5a1c2296e1959ca260d38d1ffd99f78ad))
+  ([`76d7bff`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/76d7bffb62b4fd1879bb8b616192ff631bd53d03))
 
 Self-hosting on a rented server (DigitalOcean, Hetzner, Linode, etc.) is a VPS. VPC was the wrong
   acronym — that's an AWS/GCP network concept.
@@ -239,7 +257,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ### Features
 
 - Db-backed prompts + CLI chat client + arm64 db image
-  ([`353b405`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/353b405434bb858acc6f8fe62fced4d8e6d6435c))
+  ([`8b6dbb4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/8b6dbb44f7d73eb35652e751bf4e4af2d1843a5a))
 
 - migrations/002_prompts.sql: prompts table (name PK, body, timestamps) -
   strands_pg.prompts.PgPromptStore: get/put/list/delete + seed_from_dir so fresh databases pick up
@@ -255,7 +273,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Initial scaffold — strands-pg Phase 1 MVP
-  ([`ab17cd7`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/ab17cd745ed728d44677d5df540fc117177be91e))
+  ([`50c9ca3`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/50c9ca377721220aed4eaf8090bc28704fa9083b))
 
 Bring up the reusable Strands + Postgres-for-everything framework: PLAN.md, src/strands_pg package
   (PgSessionManager, PgMemoryStore, FastAPI factory, migration runner), db + agent Dockerfiles,
@@ -268,20 +286,20 @@ PgSessionManager subclasses RepositorySessionManager + implements SessionReposit
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Multi-user memory out of the box via memory_tools factory
-  ([`026f94a`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/026f94adc63bb27a87905437e02ad3cb99b02703))
+  ([`77e22a4`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/77e22a4505b12069465efd242fc776a8c1b1925c))
 
 strands_pg.memory_tools(namespace) returns [remember, recall] tools closing over the namespace, so
   every session / user / email gets an isolated memory bucket automatically. The example wires it as
   memory_tools(namespace=session_id) inside build_agent — new agents stamped from example/ are
   multi-user by default.
 
-Verified end-to-end: alice@example.com session recalls Alice's memories; jane@example.com session
+Verified end-to-end: brian@epetersons.com session recalls Brian's memories; jane@example.com session
   sees none of them. Memory table now partitions cleanly by namespace.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Pgidentity graduates into the framework
-  ([`21cfff6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/21cfff69434c9e8a1eafc5df0181e047a5125436))
+  ([`bf391c6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/bf391c685d273279ca247c18da500ac9d9ad77de))
 
 Moves the identities + identity_emails pattern from camping-db up into strands_pg. First primitive
   earned from the camping-db port.
@@ -306,13 +324,13 @@ camping-db rebase: - delete camping-db/identity.py + camping-db/migrations/005_i
 
 verified end-to-end on a fresh DB: - migrations applied in correct order (001, 002, 003, 100, 101) -
   2 identities auto-seeded on boot with 2 + 3 email mappings - 15,668 camps re-ingested cleanly -
-  chat via alice.z@example-sat.com (Alice's satellite address) correctly resolves to the alice_rider
+  chat via peterb154@zoleo.com (Brian's satellite address) correctly resolves to the brian_peterson
   identity and surfaces "KTM 890R + 300 XC"
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Postgrest sidecar for auto-CRUD + README notes
-  ([`9455116`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/9455116d891b3024e24b88867e874b36ee41acca))
+  ([`b648154`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/b648154ee38c2d84039a6afc6a7d2b1a4df3872e))
 
 Wires PostgREST as an optional third service in camping-db/docker-compose.yml on port 3000. A new
   migration (102_pgrst_role.sql) creates a scoped web_anon role and grants SELECT on camps +
@@ -333,7 +351,7 @@ README: - New "Data APIs via PostgREST" section with the compose block, the role
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - Shadcn-style installer + stamp-ready templates
-  ([`e0dbd64`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/e0dbd64b87129db919de8ecd530bffecb7a721dc))
+  ([`7757cb2`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/7757cb26e22443522bff34ecc0e59863e733c2b0))
 
 Switches distribution from "pip install strands-pg" to a one-shot bash installer that copies the
   framework source and a starter agent shell into a new directory. From that point the user owns
@@ -370,7 +388,7 @@ Verified end-to-end on a local simulation of the installer layout: - stamped int
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - **camping-db**: Port geocode + land_ownership + parcel_lookup
-  ([`12d4095`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/12d409541dfe4b66ae33073734fbc925044220b6))
+  ([`fe665b6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/fe665b6f880ea6886b459935959497ffdf396462))
 
 Three external-API tools that close the camping-db flow:
 
@@ -394,7 +412,7 @@ verified end-to-end: - "Find me free BLM dispersed camping within 30 miles of Mo
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 
 - **camping-db**: Walk-through port of camping-db onto strands_pg
-  ([`a8d408a`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/a8d408a234c82d54b404c70d0b3d12f14dbe90aa))
+  ([`240dd41`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/240dd411353caa2d781ddd5531ec4b2d8971f20e))
 
 Demonstrates the stamping pattern end-to-end. A new agent repo living alongside example/ in-tree for
   this walkthrough; would move to its own repo in production.
@@ -405,7 +423,7 @@ Structure (maps to PLAN.md steps 3-7 of the camping-db migration):
   column, trigram + GIST indexes (replaces SQLite + FTS5 + Haversine-in-Python). -
   migrations/004_parcel_services replaces data/parcel_services.json. - migrations/005_identities
   two-table identity+email mapping so one user can have multiple email addresses
-  (alice@example.com + ZOLEO). Slated to graduate into strands_pg as PgIdentity. -
+  (brian@epetersons.com + ZOLEO). Slated to graduate into strands_pg as PgIdentity. -
   scripts/ingest.py reads legacy SQLite, parcel JSON, identity markdown (with YAML frontmatter),
   writes to PG in one shot. ran clean: 15,668 camps + 3 parcels + 2 identities. - tools/camps.py
   search_camps + get_campsite using ST_DWithin / ST_Distance, plainto_tsquery, and the
@@ -420,7 +438,7 @@ Structure (maps to PLAN.md steps 3-7 of the camping-db migration):
 
 Verified: - 5 migrations applied cleanly on a fresh DB (framework 001/002 + camping 003/004/005). -
   Spatial query against Topeka coords returned correct 5 nearest in KS. - Chat as
-  alice@example.com correctly loaded Alice's identity (KTM rig, no road restrictions) and used it
+  brian@epetersons.com correctly loaded Brian's identity (KTM rig, no road restrictions) and used it
   to reason about search results. - Chat with MT coords returned 6 correct free NF/BLM sites sorted
   by distance, with identity-aware framing ("accessible on your 890R").
 
