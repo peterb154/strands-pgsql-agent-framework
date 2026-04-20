@@ -26,18 +26,21 @@ set -euo pipefail
 REPO="${STRANDS_PG_REPO:-peterb154/strands-pgsql-agent-framework}"
 REF="${STRANDS_PG_REF:-}"
 TARGET=""
+FORCE=false
 
 usage() {
     cat <<EOF
-Usage: install.sh <target-dir> [--ref <git-tag-or-branch>]
+Usage: install.sh <target-dir> [--ref <git-tag-or-branch>] [--force]
 
 Options:
   --ref <ref>    Git tag or branch to install from (default: latest tag, else main)
+  --force, -f    Stamp into an existing directory (overlay; won't delete unrelated files)
   -h, --help     Show this help
 
 Examples:
   install.sh my-agent
   install.sh my-agent --ref v0.1.0
+  install.sh existing-repo --force --ref main    # re-stamp an existing dir in place
   STRANDS_PG_REF=main install.sh my-agent
 EOF
 }
@@ -53,6 +56,10 @@ while (( $# )); do
             ;;
         --ref=*)
             REF="${1#--ref=}"
+            shift
+            ;;
+        -f|--force)
+            FORCE=true
             shift
             ;;
         -*)
@@ -79,9 +86,13 @@ if [[ -z "$TARGET" ]]; then
     exit 2
 fi
 
-if [[ -e "$TARGET" ]]; then
-    echo "error: $TARGET already exists — pick a new path or remove it first" >&2
+if [[ -e "$TARGET" ]] && [[ "$FORCE" != "true" ]]; then
+    echo "error: $TARGET already exists — pick a new path, remove it first, or pass --force to overlay" >&2
     exit 1
+fi
+
+if [[ -e "$TARGET" ]] && [[ "$FORCE" == "true" ]]; then
+    echo "==> --force: stamping into existing directory $TARGET (overlay, no delete)"
 fi
 
 # ---- resolve ref ----------------------------------------------------------
