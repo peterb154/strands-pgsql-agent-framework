@@ -1,6 +1,33 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-04-20)
+
+### Features
+
+- **install**: --force flag to stamp into existing directories
+  ([`7bf0a91`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/7bf0a913060ed938fd3d90b418ed60f2bbc92e10))
+
+install.sh now accepts --force (or -f) to overlay the framework stamp into an existing directory.
+  Without the flag, the existing safety check still refuses (so nobody nukes an unrelated dir by
+  accident).
+
+Use cases: - Re-stamp an existing agent to pick up framework updates, then diff against working tree
+  to pick which changes to keep (the "shadcn update" flow the README already describes). - Migrate
+  an existing repo onto strands-pg — stamp files overlay the repo's working tree without touching
+  .git, existing docs, or unrelated files. How camping-db's rewrite lands on its existing git
+  history.
+
+Overlay semantics: cp -R with target already existing. Same-name files get overwritten (soul.md,
+  app.py, Dockerfile, etc.); files that aren't part of the stamp (README.md, CHANGELOG.md, .git,
+  existing data/ dirs) are left alone. No rm -rf anywhere.
+
+Verified: bash install.sh /tmp/force-test --force --ref main with a pre-existing keep-me.txt file
+  left keep-me.txt intact and stamped all expected files.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.3.0 (2026-04-20)
 
 ### Features
