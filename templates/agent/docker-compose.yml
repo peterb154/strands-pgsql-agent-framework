@@ -36,6 +36,19 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
+  # Uncomment if your agent has a browser tool (Playwright/CDP driving). Used
+  # for scraping or automating websites your domain tools need to reach.
+  # The agent talks to chromium over CDP at http://chromium:3000 — point your
+  # Playwright connect() at ws://chromium:3000 or http://chromium:3000 per
+  # browserless's docs. ~1.5GB image; skip this block if you don't need it.
+  # chromium:
+  #   image: browserless/chrome:latest
+  #   environment:
+  #     CONNECTION_TIMEOUT: "60000"
+  #     MAX_CONCURRENT_SESSIONS: "3"
+  #   shm_size: 2gb
+  #   restart: unless-stopped
+
   # Uncomment to expose the domain schema as a REST API (PostgREST).
   # Requires a role migration granting SELECT to web_anon on your tables;
   # see https://github.com/peterb154/strands-pgsql-agent-framework for the

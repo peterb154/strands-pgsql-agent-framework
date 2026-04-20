@@ -20,6 +20,23 @@ curl -s -X POST localhost:8000/chat \
   -d '{"session_id":"you@example.com","message":"hello"}'
 ```
 
+## First time on a fresh host?
+
+If you're deploying to a fresh Debian/Ubuntu LXC or VPS that doesn't yet have
+Docker installed, run `bootstrap-lxc.sh` first. It's idempotent — safe to
+re-run. Installs Docker + compose, sets log rotation, wires a systemd unit
+that auto-starts any `/opt/*/docker-compose.yml` stacks on reboot.
+
+```bash
+# one-time, as root:
+bash bootstrap-lxc.sh
+```
+
+If your host already has Docker configured the way you want, skip this and
+go straight to Quickstart. The script is yours to edit — add host-level
+setup specific to your agent (tuning, extra packages, etc.) in place and
+commit it alongside the rest.
+
 ## What's here
 
 - **`app.py`** — where you build your Strands `Agent`. This is the main
