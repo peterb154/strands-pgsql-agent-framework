@@ -1,6 +1,60 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-04-21)
+
+### Features
+
+- Host-side deploy + optional AgentMail webhook helper
+  ([`435c932`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/435c9327c11fe1e2d75e08921f430dd00fb72426))
+
+Two optional framework additions earned from the camping-db migration. Both off by default — agents
+  opt in.
+
+1. Host-side deploy orchestration (make_app(deploy=True))
+
+POST /api/deploy now ships as an opt-in feature of make_app. When enabled, the endpoint: - Auths a
+  bearer token from DEPLOY_TOKEN - Writes a timestamp to $DEPLOY_TRIGGER - Returns {"status": "ok",
+  "action": "triggered", ...} — shape that matches typical IF-node success checks in workflow tools
+  like n8n.
+
+The orchestration itself runs on the LXC HOST via systemd, not inside the agent container.
+  templates/agent/systemd/*.in holds two unit templates (*.path + *.service) with @AGENT@ and @DIR@
+  placeholders; bootstrap-lxc.sh substitutes at install time so each agent gets distinct unit names
+  (camping-db-deploy.path vs mealie-deploy.path can coexist). deploy.sh on the host does git pull +
+  docker compose up --build and survives the rebuild (in-container orchestrators don't).
+
+This graduates the pattern from camping-db, replacing the earlier in-container deploy that fought
+  SIGTERM races, docker.sock security concerns, and docker-compose-plugin packaging issues.
+
+2. AgentMail webhook helper (strands_pg.agentmail)
+
+New module with attach_email_webhook() + make_agentmail_mcp() for agents that want to serve email.
+
+attach_email_webhook(app, build_agent, known_emails, ...) registers POST /api/webhook/email with all
+  the gates that would otherwise be copy-pasted into every email agent: - Accepts message.received,
+  .spam, .blocked variants (startswith) - Sender allowlist via dynamic known_emails() callable -
+  Echo-loop prevention (skip messages from our own address) - message_id dedup - Background-thread
+  processing so the webhook returns fast - System-prompt injection telling the model to call
+  reply_to_message (without this, agents generate replies that never get sent)
+
+make_agentmail_mcp() is a tiny factory that opens the MCPClient with the x-api-key auth header
+  AgentMail actually wants (not Bearer — empirically verified, 401 without).
+
+Intentionally not exported from __init__.py — keeps the opt-in discipline, so agents that don't
+  email don't pay the MCP import cost.
+
+README: - New "Deploy architecture" section with the host-side diagram. - New "Email agents" section
+  with the wiring recipe + gotchas (x-api-key not Bearer, SPF/DKIM/DMARC prerequisite, must call
+  reply_to_message). - Anti-pattern noted: don't mount /var/run/docker.sock into the agent
+  container.
+
+Next: update camping-db to use the new helpers (removes ~70 lines of email-webhook boilerplate + ~40
+  lines of deploy wiring from its app.py).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.4.0 (2026-04-20)
 
 ### Features
