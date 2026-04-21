@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-04-21)
+
+### Features
+
+- Multi-scope memory_tools, per-request auth_verifier, commit_sha helper
+  ([`3ca218c`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/3ca218c797302669a444041ad701dfc4f7ef3bc8))
+
+Three additive capabilities for agents that serve real users over HTTP:
+
+1. memory_tools(namespaces={suffix: ns, ...}) — builds parallel remember_<suffix> / recall_<suffix>
+  tool pairs, each closed over its own namespace. Enables per-user + per-household (or per-org)
+  memory scopes from a single agent build. Single-namespace form (namespace=...) is unchanged and
+  still returns [remember, recall].
+
+2. make_app(auth_verifier=...) — opt-in per-request auth for /chat and /chat/stream. Callable
+  (token) -> {session_id, ...} | None; a 401 is returned on missing/invalid tokens. When configured,
+  session_id is derived from the verifier dict (not the request body) so clients can't spoof another
+  user's session. The full context dict is passed to agent_factory(session_id, context=ctx) IF the
+  factory accepts a `context` kwarg (detected via inspect) — keeps existing camping-db factories
+  working unchanged.
+
+3. commit_sha() + make_app(health_info=...) — /health can advertise the deployed revision without
+  shelling out. Reads .git/HEAD (supports worktrees + packed-refs). Pair with health_info=lambda:
+  {"commit": commit_sha()} so deploy pipelines (n8n, GHA) can verify a push actually landed.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.5.0 (2026-04-21)
 
 ### Features
