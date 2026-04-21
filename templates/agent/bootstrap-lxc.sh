@@ -124,6 +124,53 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# systemd units for the /api/deploy webhook
+# ---------------------------------------------------------------------------
+# OPTIONAL. Only runs if ./systemd/*.in templates are present in the agent
+# repo. The agent container's /api/deploy endpoint (enabled via
+# make_app(deploy=True)) writes a trigger file on the host. A .path unit
+# watches it, fires a .service unit that runs deploy.sh — on the HOST,
+# not inside the container. That way docker can rebuild the agent without
+# killing the orchestrator.
+#
+# Template vars: @AGENT@ gets the basename of the agent repo dir, @DIR@
+# gets the absolute path. So two agents on the same host get distinct
+# unit names (e.g. camping-db-deploy.path vs mealie-deploy.path).
+install_deploy_units() {
+    local here agent
+    here="$(dirname "$(readlink -f "$0")")"
+    agent="$(basename "$here")"
+
+    if [ ! -d "$here/systemd" ]; then
+        log "no systemd/ dir in agent repo — skipping deploy unit install"
+        return 0
+    fi
+
+    local installed=false
+    for template in "$here/systemd"/*.in; do
+        [ -e "$template" ] || continue
+        local out_name
+        out_name="$(basename "$template" .in)"
+        # strands-pg-deploy.{path,service} -> {agent}-deploy.{path,service}
+        out_name="${out_name/strands-pg-deploy/${agent}-deploy}"
+        local out_path="/etc/systemd/system/$out_name"
+
+        log "installing $out_path (from template $(basename "$template"))"
+        sed -e "s|@AGENT@|${agent}|g" -e "s|@DIR@|${here}|g" "$template" > "$out_path"
+        installed=true
+    done
+
+    if [ "$installed" = true ]; then
+        systemctl daemon-reload
+        # The .path unit triggers its matching .service. Enable the .path.
+        if [ -f "/etc/systemd/system/${agent}-deploy.path" ]; then
+            systemctl enable --now "${agent}-deploy.path"
+            log "${agent}-deploy.path enabled"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 main() {
@@ -137,6 +184,7 @@ main() {
     install_docker
     configure_docker_daemon
     install_autostart_unit
+    install_deploy_units
 
     log "done. next steps:"
     log "  cd $(dirname "$(readlink -f "$0")")"

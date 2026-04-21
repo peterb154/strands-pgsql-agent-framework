@@ -9,10 +9,13 @@ or rebuild per request; default behavior caches in-process.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -51,6 +54,7 @@ def make_app(
     cache_agents: bool = True,
     title: str = "strands-pg agent",
     prompt_store: PgPromptStore | None = None,
+    deploy: bool = False,
 ) -> FastAPI:
     """Build a FastAPI app exposing /health, /chat, and /prompts endpoints.
 
@@ -58,6 +62,16 @@ def make_app(
     agent factory is dropped from the cache whenever a prompt changes (so the
     next request builds a fresh agent with the updated prompt). If None, no
     /prompts endpoints are registered.
+
+    ``deploy``: if True, registers a ``POST /api/deploy`` endpoint that
+    writes a timestamp to ``$DEPLOY_TRIGGER`` (default
+    ``/opt/<agent>/.deploy-trigger``). Pair with the host-side systemd
+    units installed by ``bootstrap-lxc.sh`` — a ``.path`` unit watches the
+    trigger file and fires a ``.service`` unit that runs ``deploy.sh`` on
+    the host. Orchestrating from outside the container is critical: a
+    rebuild kills the container, which would kill any in-container
+    orchestrator mid-command. Auth via ``DEPLOY_TOKEN`` env var as a
+    bearer token.
     """
     app = FastAPI(title=title)
     agents: dict[str, Any] = {}
@@ -128,7 +142,47 @@ def make_app(
             invalidate_agents()
             return {"deleted": True}
 
+    if deploy:
+        _register_deploy_endpoint(app)
+
     return app
+
+
+# ---------------------------------------------------------------------------
+# deploy endpoint
+# ---------------------------------------------------------------------------
+
+
+def _register_deploy_endpoint(app: FastAPI) -> None:
+    """POST /api/deploy — writes a trigger file, returns {"status": "ok"}.
+
+    Orchestration happens on the host via systemd (.path watches the file,
+    .service fires deploy.sh). The endpoint itself is ~instant: auth
+    check, write timestamp, return. No Popen, no sleep, no race.
+    """
+    deploy_token = os.environ.get("DEPLOY_TOKEN", "")
+    deploy_trigger = os.environ.get("DEPLOY_TRIGGER", "/opt/app/.deploy-trigger")
+
+    @app.post("/api/deploy")
+    def deploy(authorization: str = Header(default="")) -> dict[str, str]:
+        if not deploy_token:
+            raise HTTPException(status_code=503, detail="DEPLOY_TOKEN not configured")
+        if authorization != f"Bearer {deploy_token}":
+            raise HTTPException(status_code=401, detail="Invalid deploy token")
+
+        try:
+            Path(deploy_trigger).write_text(
+                f"{datetime.now(UTC).isoformat()}\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.exception("could not write deploy trigger")
+            raise HTTPException(
+                status_code=500, detail=f"trigger write failed: {exc}"
+            ) from exc
+
+        logger.info("deploy trigger written to %s", deploy_trigger)
+        # Response shape: n8n-compatible check `$json.status === "ok"`.
+        return {"status": "ok", "action": "triggered", "trigger": deploy_trigger}
 
 
 async def _stream_agent(

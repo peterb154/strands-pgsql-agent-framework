@@ -173,7 +173,13 @@ sequenceDiagram
 
 - `make_app(agent_factory)` — a FastAPI factory with `/health`, `/chat`, and
   optional `/prompts` endpoints. Convenience, not essence. Skip it if you have
-  your own HTTP layer.
+  your own HTTP layer. Two additional opt-in features:
+    - `make_app(..., deploy=True)` adds `POST /api/deploy` — writes a trigger
+      file that a host-side systemd unit picks up. See "Deploy architecture"
+      below.
+    - `from strands_pg.agentmail import attach_email_webhook` — adds a
+      `POST /api/webhook/email` handler with allowlist + echo-loop guards
+      + prompt-injection for reply-via-MCP. See "Email agents" below.
 
 - A chat CLI (`python -m strands_pg.cli`) that talks to `/chat` over HTTP.
   Useful for iterating on prompts and tools without building a frontend.
@@ -279,6 +285,105 @@ Two worked examples live in the repo:
   identities mapped to multiple emails each, and five tools (`search_camps`,
   `get_campsite`, `geocode`, `land_ownership`, `parcel_lookup`). Runs on port
   8001 alongside `example/` on 8000, plus a PostgREST sidecar on 3000.
+
+## Deploy architecture
+
+Every strands-pg agent ends up needing a "git push → rebuild on the LXC"
+webhook. We learned the hard way not to run that orchestration from
+inside the container being rebuilt — docker kills the orchestrator
+mid-command. The framework's default is **host-side orchestration**:
+
+```text
+ agent container              LXC host
+ ----------------             -------------------------------------
+ POST /api/deploy             <agent>-deploy.path (systemd)
+   └► writes timestamp ────►  (PathModified on .deploy-trigger)
+      to .deploy-trigger               │
+      (via bind mount)                 ▼
+                             <agent>-deploy.service
+                               └► /opt/<agent>/deploy.sh
+                                   git pull
+                                   docker compose up -d --build
+                               (runs on HOST, survives rebuild)
+```
+
+**Enable it** by passing `deploy=True` to `make_app(...)` and setting
+two env vars in `.env`:
+
+```text
+DEPLOY_TOKEN=a-long-random-bearer-token
+DEPLOY_TRIGGER=/opt/<your-agent>/.deploy-trigger
+```
+
+The systemd units are installed by `bootstrap-lxc.sh` from templates in
+`templates/agent/systemd/*.in` — substituted at install time so two
+agents on the same host get distinct unit names
+(e.g. `camping-db-deploy.service` vs `mealie-deploy.service`).
+
+**Debug a deploy:** `journalctl -u <agent>-deploy.service -n 100`.
+
+**Anti-pattern to avoid:** mounting `/var/run/docker.sock` into the
+agent container so it can run `docker compose` itself. Gives any process
+in the container root-equivalent on the host, and fails the first time
+docker rebuilds the container out from under the running script.
+
+## Email agents
+
+If your agent wants to serve email (via [AgentMail](https://agentmail.to)
+or similar), the framework has a helper. It's **off by default** — you
+only pay the MCP + webhook cost if you wire it in.
+
+```python
+from strands_pg import make_app, PgIdentity
+from strands_pg.agentmail import attach_email_webhook, make_agentmail_mcp
+
+identities = PgIdentity()
+agentmail_mcp = make_agentmail_mcp()  # uses AGENTMAIL_API_KEY env var
+
+def build_agent(session_id: str, extra_prompt: str = "") -> Agent:
+    return Agent(
+        system_prompt=_system_prompt_for(session_id, extra_prompt),
+        tools=[
+            *agentmail_mcp.list_tools_sync(),   # send/reply/threads
+            *memory_tools(namespace=session_id),
+            *your_domain_tools,
+        ],
+        session_manager=PgSessionManager(session_id=session_id),
+    )
+
+app = make_app(build_agent, prompt_store=prompts, deploy=True)
+attach_email_webhook(
+    app,
+    build_agent=build_agent,
+    known_emails=lambda: {e.lower() for i in identities.list() for e in i.emails},
+    agentmail_address=os.environ["AGENTMAIL_ADDRESS"],
+)
+```
+
+`attach_email_webhook` handles:
+- event-type filter (`message.received` + its `.spam` / `.blocked` variants)
+- sender allowlist via `known_emails`
+- echo-loop prevention
+- dedup by `message_id`
+- agent processing in a background thread so the webhook returns fast
+- prompt injection telling the model it MUST call `reply_to_message` on
+  the MCP to actually send the reply (without this, you'll find the
+  agent generates beautiful responses that go nowhere)
+
+### Gotchas for email agents
+
+- **AgentMail MCP auth uses `x-api-key`**, not `Authorization: Bearer`.
+  `make_agentmail_mcp()` handles this. If you're wiring MCP manually and
+  getting 401, this is why.
+- **SPF + DKIM + DMARC on your sending domain are a prerequisite.** If
+  you see every test email flagged as spam, run
+  `dig TXT <your-domain>` and look for SPF/DMARC records. Missing auth
+  records + sending via Gmail with a custom From → spam classifier
+  fires, the `message.received` event never reaches your webhook.
+- **The agent MUST call `reply_to_message` to send.** Writing a
+  response as chat text goes nowhere — email is async. The prompt
+  injection in `attach_email_webhook` makes this explicit, but if you
+  customize the template, keep the directive.
 
 ## Data APIs via PostgREST
 
