@@ -8,6 +8,7 @@ or rebuild per request; default behavior caches in-process.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from collections.abc import AsyncIterator, Callable
@@ -26,11 +27,57 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-AgentFactory = Callable[[str], "Agent"]
+AgentFactory = Callable[..., "Agent"]
+AuthVerifier = Callable[[str], dict[str, Any] | None]
+
+
+def commit_sha(repo_dir: str | Path | None = None, length: int = 7) -> str:
+    """Read the current commit SHA from a ``.git`` directory without shelling out.
+
+    Useful for ``/health`` to advertise the deployed revision (so callers like
+    n8n can verify a deploy actually landed). Reads ``.git/HEAD`` and chases
+    the ref one level — enough for a normal checkout. Returns ``"unknown"`` on
+    any failure.
+
+    ``repo_dir``: directory containing ``.git``. Defaults to CWD (the container
+    image typically runs in ``/app`` with the repo mounted or copied there).
+    """
+    base = Path(repo_dir) if repo_dir else Path.cwd()
+    git_dir = base / ".git"
+    if not git_dir.exists():
+        return "unknown"
+    try:
+        # Worktree layout: .git is a file pointing at gitdir
+        if git_dir.is_file():
+            content = git_dir.read_text(encoding="utf-8").strip()
+            if content.startswith("gitdir: "):
+                git_dir = Path(content[len("gitdir: ") :])
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref_path = git_dir / head[len("ref: ") :]
+            if ref_path.exists():
+                return ref_path.read_text(encoding="utf-8").strip()[:length]
+            # Packed refs fallback
+            packed = git_dir / "packed-refs"
+            if packed.exists():
+                target_ref = head[len("ref: ") :]
+                for line in packed.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("#") or line.startswith("^"):
+                        continue
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2 and parts[1] == target_ref:
+                        return parts[0][:length]
+            return "unknown"
+        # Detached HEAD
+        return head[:length]
+    except OSError:
+        return "unknown"
 
 
 class ChatRequest(BaseModel):
-    session_id: str = Field(..., min_length=1)
+    # session_id is required only when no auth_verifier is configured.
+    # When auth is on, session_id is derived from the verifier's result.
+    session_id: str | None = Field(None, min_length=1)
     message: str = Field(..., min_length=1)
 
 
@@ -55,6 +102,9 @@ def make_app(
     title: str = "strands-pg agent",
     prompt_store: PgPromptStore | None = None,
     deploy: bool = False,
+    auth_verifier: AuthVerifier | None = None,
+    health_info: Callable[[], dict[str, Any]] | None = None,
+    health_path: str = "/health",
 ) -> FastAPI:
     """Build a FastAPI app exposing /health, /chat, and /prompts endpoints.
 
@@ -72,14 +122,47 @@ def make_app(
     rebuild kills the container, which would kill any in-container
     orchestrator mid-command. Auth via ``DEPLOY_TOKEN`` env var as a
     bearer token.
+
+    ``auth_verifier``: opt-in per-request auth for ``/chat`` and
+    ``/chat/stream``. A callable ``(token: str) -> dict | None``:
+    - given the token after ``Authorization: Bearer ``
+    - returns a context dict on success (MUST include key ``session_id``,
+      plus whatever else the agent_factory needs) or ``None`` on failure
+    - a 401 response is returned on missing/invalid tokens
+
+    When ``auth_verifier`` is set, ``/chat`` bodies do NOT need to include
+    ``session_id`` — it's taken from the verifier's return value. The
+    full context dict is passed to ``agent_factory`` as ``context=dict``
+    IF the factory's signature accepts it (detected via ``inspect``).
+
+    Typical use: a Mealie/Auth0/OIDC-backed agent. For a Mealie example,
+    the verifier introspects the user's JWT via ``GET /api/users/self``
+    and returns ``{session_id, email, user_id, group_id, household_id}``
+    which build_agent uses for per-household memory namespacing.
     """
     app = FastAPI(title=title)
     agents: dict[str, Any] = {}
 
-    def get_agent(session_id: str) -> Any:
+    # Introspect once: does agent_factory accept context=? Most camping-db-era
+    # factories have signature (session_id: str, extra_prompt: str = ""), which
+    # doesn't accept context. Mealie-style factories take context. We pass
+    # context only when the factory advertises it.
+    _factory_sig = inspect.signature(agent_factory)
+    _factory_accepts_context = (
+        "context" in _factory_sig.parameters
+        or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in _factory_sig.parameters.values()
+        )
+    )
+
+    def get_agent(session_id: str, context: dict[str, Any] | None = None) -> Any:
         if cache_agents and session_id in agents:
             return agents[session_id]
-        agent = agent_factory(session_id)
+        if context is not None and _factory_accepts_context:
+            agent = agent_factory(session_id, context=context)
+        else:
+            agent = agent_factory(session_id)
         if cache_agents:
             agents[session_id] = agent
         return agent
@@ -87,23 +170,67 @@ def make_app(
     def invalidate_agents() -> None:
         agents.clear()
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def _authed_context(authorization: str) -> dict[str, Any]:
+        """Validate bearer token and return the verifier's context dict.
+
+        Only called when auth_verifier is configured. Raises 401 on any
+        failure. The returned dict must carry a ``session_id`` key.
+        """
+        assert auth_verifier is not None  # noqa: S101 — guarded by caller
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        token = authorization[len("Bearer ") :].strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="Empty bearer token")
+        try:
+            ctx = auth_verifier(token)
+        except Exception as exc:  # noqa: BLE001 — upstream verifier errors → 401
+            logger.warning("auth_verifier raised: %s", exc)
+            ctx = None
+        if not ctx or "session_id" not in ctx:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return ctx
+
+    @app.get(health_path)
+    def health() -> dict[str, Any]:
+        out: dict[str, Any] = {"status": "ok"}
+        if health_info is not None:
+            try:
+                extras = health_info() or {}
+                if isinstance(extras, dict):
+                    out.update(extras)
+            except Exception:  # noqa: BLE001 — health must never fail
+                logger.exception("health_info() raised; returning bare status")
+        return out
 
     @app.post("/chat", response_model=ChatResponse)
-    def chat(req: ChatRequest) -> ChatResponse:
+    def chat(req: ChatRequest, authorization: str = Header(default="")) -> ChatResponse:
+        context: dict[str, Any] | None = None
+        session_id: str | None = req.session_id
+
+        if auth_verifier is not None:
+            context = _authed_context(authorization)
+            session_id = context["session_id"]
+        elif not session_id:
+            raise HTTPException(
+                status_code=400, detail="session_id required (no auth_verifier configured)"
+            )
+
         try:
-            agent = get_agent(req.session_id)
+            agent = get_agent(session_id, context=context)
             result = agent(req.message)
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001 — surface as 500 to the client
-            logger.exception("chat failed for session_id=%s", req.session_id)
+            logger.exception("chat failed for session_id=%s", session_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        return ChatResponse(session_id=req.session_id, response=str(result))
+        return ChatResponse(session_id=session_id, response=str(result))
 
     @app.post("/chat/stream")
-    async def chat_stream(req: ChatRequest) -> EventSourceResponse:
+    async def chat_stream(
+        req: ChatRequest, authorization: str = Header(default="")
+    ) -> EventSourceResponse:
         """Same as /chat but streams events as Server-Sent Events.
 
         Event shape is normalized across Strands SDK versions:
@@ -113,7 +240,20 @@ def make_app(
           - ``event: done``       terminal event (empty data)
           - ``event: error``      any exception (data = error message)
         """
-        return EventSourceResponse(_stream_agent(get_agent, req))
+        context: dict[str, Any] | None = None
+        session_id: str | None = req.session_id
+
+        if auth_verifier is not None:
+            context = _authed_context(authorization)
+            session_id = context["session_id"]
+        elif not session_id:
+            raise HTTPException(
+                status_code=400, detail="session_id required (no auth_verifier configured)"
+            )
+
+        return EventSourceResponse(
+            _stream_agent(get_agent, session_id, req.message, context)
+        )
 
     if prompt_store is not None:
 
@@ -186,7 +326,10 @@ def _register_deploy_endpoint(app: FastAPI) -> None:
 
 
 async def _stream_agent(
-    get_agent: Callable[[str], Any], req: ChatRequest
+    get_agent: Callable[..., Any],
+    session_id: str,
+    message: str,
+    context: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """Bridge Strands' native stream_async into normalized SSE events.
 
@@ -196,9 +339,9 @@ async def _stream_agent(
     internal event shape evolves.
     """
     try:
-        agent = get_agent(req.session_id)
+        agent = get_agent(session_id, context=context)
         seen_tool_ids: set[str] = set()
-        async for ev in agent.stream_async(req.message):
+        async for ev in agent.stream_async(message):
             if "reasoningText" in ev and ev["reasoningText"]:
                 yield {"event": "thinking", "data": ev["reasoningText"]}
             elif "current_tool_use" in ev:
@@ -211,5 +354,5 @@ async def _stream_agent(
                 yield {"event": "text", "data": ev["data"]}
         yield {"event": "done", "data": ""}
     except Exception as exc:  # noqa: BLE001 — surface via SSE error event
-        logger.exception("/chat/stream failed for session_id=%s", req.session_id)
+        logger.exception("/chat/stream failed for session_id=%s", session_id)
         yield {"event": "error", "data": str(exc)}
