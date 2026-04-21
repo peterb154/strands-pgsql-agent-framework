@@ -573,16 +573,67 @@ curl -s localhost:8000/health
 
 ## Updating
 
-There's no auto-update. If we ship a v0.2.0 and you want to pull changes:
+To bump the framework on an existing agent without touching your templates:
 
 ```bash
-# Re-stamp into a scratch directory and diff against your tree:
-bash install.sh /tmp/fresh-stamp --ref v0.2.0
+bash install.sh my-agent --refresh --ref v0.7.0
+```
+
+`--refresh` only rewrites `strands_pg/` and the framework-numbered migrations
+(`migrations/0*.sql`). Your `app.py`, `tools/`, `prompts/`, `Dockerfile`,
+`docker-compose.yml`, etc. are left alone.
+
+If you want a full re-stamp (accepting that templated files will be
+overwritten):
+
+```bash
+bash install.sh my-agent --force --ref v0.7.0
+```
+
+`my-agent/.strands-pg-ref` records which version you stamped from originally.
+When in doubt, diff a fresh stamp against your tree:
+
+```bash
+bash install.sh /tmp/fresh-stamp --ref v0.7.0
 diff -r /tmp/fresh-stamp my-agent
 ```
 
-Apply what you want, skip what you don't. `my-agent/.strands-pg-ref` records
-which version you stamped from originally.
+## Deployment gotchas
+
+A few things that aren't framework bugs but that have bitten real agents
+on real deployments. Worth knowing before you spend an hour tracing a
+symptom.
+
+**Nginx sub_filter + `location`-scope inheritance.** If you inject a
+`<script>` tag into an upstream's HTML via Nginx Proxy Manager's Advanced
+tab — the classic "drop a floating button into Mealie" pattern — note that
+NPM places Advanced directives at `server` scope, but its generated
+`location /` has its own `proxy_set_header` directives. Per nginx rules,
+any `proxy_set_header` in a location block **replaces** all inherited
+ones, so your `Accept-Encoding ""` reset silently never reaches the
+upstream and `sub_filter` sits idle on gzipped bytes. Symptoms: the
+`<script>` tag isn't in the rendered HTML even though your config looks
+right, and the upstream keeps returning `Content-Encoding: gzip`.
+
+Fix: edit the generated `/data/nginx/proxy_host/*.conf` file directly to
+add `proxy_set_header Accept-Encoding "";` *inside* `location /`. See
+[`local_network/npm/`](https://github.com/peterb154/local_network/tree/main/npm)
+for an idempotent patch-script pattern that survives NPM UI edits.
+
+**Commit SHA in `/api/health` needs a rebuild, not just a restart.** If
+you pass `health_info=lambda: {"commit": os.environ["GIT_SHA"]}` to
+`make_app`, the value comes from a docker build arg that deploy.sh sets
+before `docker compose up -d --build`. A `docker restart` without
+`--build` keeps the old SHA. Use `commit_sha()` as a fallback when you
+bind-mount the repo into the container — it reads `.git/HEAD` off the
+mount.
+
+**SSE responses through nginx.** `make_app` already sets
+`X-Accel-Buffering: no` and `Cache-Control: no-transform` on
+`/chat/stream`, so nginx shouldn't buffer. If you see streaming hang or
+arrive in one chunk, check whether a different proxy (Cloudflare,
+CloudFront, corporate squid) is in the path — those can re-compress or
+buffer independently.
 
 ## Status
 

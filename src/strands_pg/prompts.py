@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from strands_pg._pool import get_pool
@@ -41,6 +42,19 @@ class PgPromptStore:
         if row is None:
             return None
         return Prompt(name=row[0], body=row[1])
+
+    def _get_updated_at(self, name: str) -> datetime | None:
+        """Internal: timestamp of the last write to this prompt row, or None
+        if the row doesn't exist. Used by seed_from_dir to compare against
+        the source file's mtime."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT updated_at FROM prompts WHERE name = %s", (name,))
+            row = cur.fetchone()
+        if row is None:
+            return None
+        ts = row[0]
+        # psycopg returns naive or aware depending on driver config; normalize.
+        return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
     def put(self, name: str, body: str) -> Prompt:
         with self._pool.connection() as conn, conn.cursor() as cur:
@@ -75,9 +89,22 @@ class PgPromptStore:
     def seed_from_dir(self, directory: str | Path, *, overwrite: bool = False) -> list[str]:
         """Load every ``*.md`` file in ``directory`` into the prompts table.
 
-        By default only seeds names that don't already exist (DB is the source
-        of truth after first boot). Pass ``overwrite=True`` to force. Returns
-        the list of names that were written.
+        Semantics, per file:
+
+        - Row missing → insert.
+        - Row exists, file's mtime is NEWER than the row's ``updated_at`` →
+          update. This makes the edit-on-disk → redeploy workflow "just
+          work": a prompts file that changed between deploys wins, and the
+          row's timestamp then leapfrogs the file until the next edit.
+        - Row exists, file's mtime is OLDER or EQUAL → leave alone. Live
+          tweaks made via ``put()`` (e.g. the ``/prompts`` API) survive
+          container restarts because their ``updated_at`` will be newer
+          than the baked-in file mtime.
+
+        ``overwrite=True`` forces every file to be written regardless of
+        timestamps — useful for tests or a deliberate "reset to disk".
+
+        Returns the list of names that were written.
         """
         path = Path(directory)
         if not path.is_dir():
@@ -87,7 +114,17 @@ class PgPromptStore:
         for md in sorted(path.glob("*.md")):
             name = md.stem
             body = md.read_text(encoding="utf-8")
-            if overwrite or self.get(name) is None:
+            if overwrite:
+                self.put(name, body)
+                written.append(name)
+                continue
+            existing_ts = self._get_updated_at(name)
+            if existing_ts is None:
+                self.put(name, body)
+                written.append(name)
+                continue
+            file_mtime = datetime.fromtimestamp(md.stat().st_mtime, tz=UTC)
+            if file_mtime > existing_ts:
                 self.put(name, body)
                 written.append(name)
         if written:

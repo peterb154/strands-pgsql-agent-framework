@@ -27,20 +27,28 @@ REPO="${STRANDS_PG_REPO:-peterb154/strands-pgsql-agent-framework}"
 REF="${STRANDS_PG_REF:-}"
 TARGET=""
 FORCE=false
+REFRESH=false
 
 usage() {
     cat <<EOF
-Usage: install.sh <target-dir> [--ref <git-tag-or-branch>] [--force]
+Usage: install.sh <target-dir> [--ref <git-tag-or-branch>] [--force|--refresh]
 
 Options:
   --ref <ref>    Git tag or branch to install from (default: latest tag, else main)
-  --force, -f    Stamp into an existing directory (overlay; won't delete unrelated files)
+  --force, -f    Overlay ALL files, including templates (Dockerfile, app.py,
+                 prompts/, etc.). Use when you want a clean re-stamp and accept
+                 losing any customizations to templated files.
+  --refresh      Framework-only upgrade: refreshes strands_pg/ + migrations/0*
+                 and leaves app.py / tools/ / prompts/ / Dockerfile / compose
+                 alone. Use this when bumping the framework version on an
+                 existing agent.
   -h, --help     Show this help
 
 Examples:
-  install.sh my-agent
-  install.sh my-agent --ref v0.1.0
-  install.sh existing-repo --force --ref main    # re-stamp an existing dir in place
+  install.sh my-agent                             # new agent, latest tag
+  install.sh my-agent --ref v0.1.0                # pin a specific version
+  install.sh existing --refresh --ref v0.7.0      # upgrade framework only
+  install.sh existing --force --ref main          # re-stamp everything
   STRANDS_PG_REF=main install.sh my-agent
 EOF
 }
@@ -60,6 +68,10 @@ while (( $# )); do
             ;;
         -f|--force)
             FORCE=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         -*)
@@ -86,13 +98,27 @@ if [[ -z "$TARGET" ]]; then
     exit 2
 fi
 
-if [[ -e "$TARGET" ]] && [[ "$FORCE" != "true" ]]; then
-    echo "error: $TARGET already exists — pick a new path, remove it first, or pass --force to overlay" >&2
+if [[ "$FORCE" == "true" ]] && [[ "$REFRESH" == "true" ]]; then
+    echo "error: --force and --refresh are mutually exclusive" >&2
+    exit 2
+fi
+
+if [[ -e "$TARGET" ]] && [[ "$FORCE" != "true" ]] && [[ "$REFRESH" != "true" ]]; then
+    echo "error: $TARGET already exists — pick a new path, remove it first, or pass --force / --refresh" >&2
+    exit 1
+fi
+
+if [[ ! -e "$TARGET" ]] && [[ "$REFRESH" == "true" ]]; then
+    echo "error: --refresh requires an existing directory (you can't refresh a stamp that doesn't exist yet)" >&2
     exit 1
 fi
 
 if [[ -e "$TARGET" ]] && [[ "$FORCE" == "true" ]]; then
-    echo "==> --force: stamping into existing directory $TARGET (overlay, no delete)"
+    echo "==> --force: stamping into existing directory $TARGET (full overlay, no delete)"
+fi
+
+if [[ "$REFRESH" == "true" ]]; then
+    echo "==> --refresh: upgrading framework in $TARGET (templates untouched)"
 fi
 
 # ---- resolve ref ----------------------------------------------------------
@@ -129,24 +155,31 @@ fi
 echo "==> stamping into $TARGET..."
 mkdir -p "$TARGET"
 
-# Template files (Dockerfile, compose, app.py, prompts, etc.) — the shape of
-# the new agent.
-cp -R "$TMP/src/templates/agent/." "$TARGET/"
+if [[ "$REFRESH" != "true" ]]; then
+    # Template files (Dockerfile, compose, app.py, prompts, etc.) — the
+    # shape of the new agent. Only copied on fresh stamp or --force.
+    cp -R "$TMP/src/templates/agent/." "$TARGET/"
 
-# Vendored framework source — user owns this now.
+    # Convenience: create an empty tools/ so imports don't blow up.
+    mkdir -p "$TARGET/tools"
+    touch "$TARGET/tools/__init__.py"
+
+    # Clean up the .gitkeep if we left it.
+    rm -f "$TARGET/tools/.gitkeep"
+fi
+
+# Vendored framework source — user owns this now. ALWAYS refreshed, since
+# bumping this is the whole point of --refresh.
 mkdir -p "$TARGET/strands_pg"
 cp -R "$TMP/src/src/strands_pg/." "$TARGET/strands_pg/"
 
 # Framework migrations 001-099. User drops their own 100+ next to these.
+# Only the framework-numbered migrations are refreshed; user's 100+ files
+# are untouched because we copy by exact framework filename.
 mkdir -p "$TARGET/migrations"
-cp -R "$TMP/src/migrations/." "$TARGET/migrations/"
-
-# Convenience: create an empty tools/ so imports don't blow up.
-mkdir -p "$TARGET/tools"
-touch "$TARGET/tools/__init__.py"
-
-# Clean up the .gitkeep if we left it.
-rm -f "$TARGET/tools/.gitkeep"
+for mig in "$TMP/src/migrations"/*.sql; do
+    cp -f "$mig" "$TARGET/migrations/"
+done
 
 # Record the stamp reference so `diff -r` later has something to compare to.
 cat > "$TARGET/.strands-pg-ref" <<EOF

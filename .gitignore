@@ -34,3 +34,4 @@ pgdata/
 # claude
 .claude/settings.local.json
 camping-db/.env
+.claude/
