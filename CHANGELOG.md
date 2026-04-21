@@ -1,6 +1,39 @@
 # CHANGELOG
 
 
+## v0.7.0 (2026-04-21)
+
+### Features
+
+- Safer re-stamp, mtime-aware prompt seeding, deployment gotchas
+  ([`d03f2c6`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/d03f2c6cdeed6def8220beb8a06c322d99981995))
+
+Three improvements that came out of actually stamping strands-pg into two agents (camping-db,
+  mealie-agent) and hitting the rough edges:
+
+1. install.sh --refresh A framework-only re-stamp that touches ONLY strands_pg/ and the
+  framework-numbered migrations (0*.sql). app.py, tools/, prompts/, Dockerfile, docker-compose.yml,
+  bootstrap-lxc.sh, systemd/, etc. are left alone. Use this when bumping the framework on an
+  existing agent. --force still exists for "I want a full re-stamp and I know what I'm overwriting";
+  --refresh is now the recommended upgrade path and won't make you restore from git if you forget
+  the flag.
+
+2. PgPromptStore.seed_from_dir respects file mtime Old behavior: only wrote a prompt if the row
+  didn't exist. That meant editing prompts/rules.md on disk + redeploying had NO effect unless you
+  also PUT the new content to /prompts/<name> manually.
+
+New default: for each <name>.md file, insert if missing, OR update if the file's mtime is newer than
+  the row's updated_at. Live tweaks made via the /prompts API still survive restarts (their
+  updated_at leapfrogs the baked-in file mtime). Pass overwrite=True to force a full reseed
+  regardless.
+
+3. README: Deployment gotchas section Writes down the nginx sub_filter + location-scope-replacement
+  trap that ate an hour of mealie-agent's first shim deploy, plus notes on docker-build-vs-restart
+  for GIT_SHA and where SSE streaming tends to stall in proxy chains.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
 ## v0.6.0 (2026-04-21)
 
 ### Features
