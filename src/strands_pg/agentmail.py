@@ -34,12 +34,18 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+# Module-level constant so a future AgentMail rename of the tool only
+# requires bumping this one symbol (vs. a hardcoded string match
+# scattered through the trace walker).
+_REPLY_TOOL_NAME = "reply_to_message"
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +78,105 @@ class AgentMailMessage(BaseModel):
 class AgentMailWebhook(BaseModel):
     event_type: str
     message: AgentMailMessage
+
+
+# ---------------------------------------------------------------------------
+# observability helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FailureEvent:
+    """Snapshot of a single failed inbound-email turn.
+
+    Passed to the ``on_failure`` callback registered with
+    ``attach_email_webhook``. Pure data — the framework does not assume
+    any particular delivery channel for failure notifications. Consumers
+    without a UI (e.g. agentmail-only agents) typically wire
+    ``agentmail_operator_notify`` as the callback; chat-fronted agents
+    that surface failures in their UI usually pass nothing.
+
+    Attributes:
+        inbound_message: the AgentMail webhook payload that triggered
+            this turn. Carries ``message_id`` / ``thread_id`` /
+            ``inbox_id`` / ``subject`` for diagnostics.
+        sender: lowercased sender email (already extracted from the
+            ``From:`` header).
+        failure_reason: human-readable description. Either a Python
+            exception text (if ``agent(body)`` raised) or a
+            "reply_to_message not successfully called (last status=...)"
+            line synthesized from the tool trace.
+        trace_lines: per-tool-call human-readable trace, one entry per
+            ``(toolUse, toolResult)`` pair. Already includes orphan
+            toolUses surfaced as ``status=(no result)``.
+    """
+
+    inbound_message: AgentMailMessage
+    sender: str
+    failure_reason: str
+    trace_lines: list[str] = field(default_factory=list)
+
+
+def walk_tool_trace(
+    messages: list[Any],
+) -> tuple[str | None, list[str]]:
+    """Walk a list of Strands messages and reconstruct the tool trace.
+
+    Strands stores tool I/O as content items on the message stream:
+    ``toolUse`` (model invoking a tool with ``input``) and ``toolResult``
+    (the tool's response, with ``status`` ``"success"`` or ``"error"``).
+    Strands' default logger only emits ``Tool #N: name`` markers — args
+    and results are dropped, so a tool that returned an error result
+    (rather than raising) leaves no diagnostic trail. This rebuilds it.
+
+    Pure: returns data, emits no log records. The caller decides whether
+    and at what level to log the result.
+
+    Returns ``(reply_status, trace_lines)`` where ``reply_status`` is:
+
+    - ``"success"`` / ``"error"`` — last ``reply_to_message`` toolResult's status
+    - ``"no_result"`` — ``reply_to_message`` toolUse appeared but no
+      toolResult was ever appended (cycle exited mid-tool)
+    - ``None`` — ``reply_to_message`` was never invoked
+
+    ``trace_lines`` is the human-readable per-tool trace, suitable for
+    embedding in a notification or dumping to logs.
+    """
+    tool_uses: dict[str, dict] = {}
+    matched: set[str] = set()
+    reply_status: str | None = None
+    trace_lines: list[str] = []
+    for m in messages:
+        for c in m.get("content", []) or []:
+            if "toolUse" in c:
+                tu = c["toolUse"]
+                tool_uses[tu["toolUseId"]] = tu
+            elif "toolResult" in c:
+                tr = c["toolResult"]
+                tu = tool_uses.get(tr["toolUseId"], {})
+                name = tu.get("name", "<unknown>")
+                status = tr.get("status")
+                trace_lines.append(
+                    f"tool={name} status={status} "
+                    f"input={tu.get('input')!r} result={tr.get('content')!r}"
+                )
+                matched.add(tr["toolUseId"])
+                if name == _REPLY_TOOL_NAME:
+                    reply_status = status
+    # Surface any toolUse without a matching toolResult — Strands can
+    # exit a cycle after invoke and before the result message is
+    # appended (model returns end_turn early, error mid-execution).
+    # Without this we'd see "tool was called" with no input recorded.
+    for tu_id, tu in tool_uses.items():
+        if tu_id in matched:
+            continue
+        name = tu.get("name", "<unknown>")
+        trace_lines.append(
+            f"tool={name} status=(no result) input={tu.get('input')!r}"
+        )
+        if name == _REPLY_TOOL_NAME and reply_status is None:
+            reply_status = "no_result"
+    return reply_status, trace_lines
 
 
 # ---------------------------------------------------------------------------
