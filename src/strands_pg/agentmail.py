@@ -30,15 +30,16 @@ Notes on AgentMail's event types:
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import threading
+import urllib.parse
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 from strands.hooks import MessageAddedEvent
@@ -215,26 +216,35 @@ def agentmail_operator_notify(
             parameter and as the source for the default reply_to.
         reply_to: optional override for the Reply-To header. Defaults
             to ``noreply@<from_inbox-domain>``.
-        api_key: optional AGENTMAIL_API_KEY override. Defaults to env.
+        api_key: optional AGENTMAIL_API_KEY override. If passed, it's
+            captured at factory creation. If left ``None``, the env var
+            is read fresh on each call (so rotated secrets pick up
+            without a restart).
         timeout: HTTP timeout for the send POST. The notification path
             should never block the webhook handler indefinitely.
 
     Chat-fronted agents that surface failures in their UI typically
     don't need this — pass nothing for ``on_failure``.
     """
-    key = api_key or os.environ.get("AGENTMAIL_API_KEY")
     domain = from_inbox.split("@", 1)[-1] if "@" in from_inbox else from_inbox
     default_reply_to = reply_to or f"noreply@{domain}"
+    # Quote the inbox segment for path safety. AgentMail addresses
+    # contain ``@`` legitimately, so keep that unescaped — but anything
+    # else (path separators, weird Unicode in a misconfigured env var)
+    # gets percent-encoded so a typo can't path-traverse the REST API.
+    inbox_segment = urllib.parse.quote(from_inbox, safe="@")
+    send_url = f"https://api.agentmail.to/v0/inboxes/{inbox_segment}/messages/send"
 
     def _notify(event: FailureEvent) -> None:
+        # Read env on each call when no explicit key was passed, so a
+        # rotated AGENTMAIL_API_KEY takes effect without a restart.
+        key = api_key or os.environ.get("AGENTMAIL_API_KEY")
         if not key:
             logger.warning(
                 "AGENTMAIL_API_KEY missing; cannot notify %s of failure on %s",
                 to_email, event.inbound_message.message_id,
             )
             return
-
-        import httpx
 
         trace_block = "\n".join(event.trace_lines) or "(no tool calls recorded)"
         text = (
@@ -248,7 +258,7 @@ def agentmail_operator_notify(
         )
         try:
             r = httpx.post(
-                f"https://api.agentmail.to/v0/inboxes/{from_inbox}/messages/send",
+                send_url,
                 headers={
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
@@ -483,13 +493,26 @@ def _process(
     # wholesale during a cycle, invalidating the length snapshot. The
     # hook fires once per appended message — robust against in-place
     # pruning, list replacement, and partial-failure unwinds.
+    #
+    # ASSUMPTION: build_agent returns a fresh Agent per call. Strands'
+    # ``HookRegistry`` has no ``remove_callback`` method, so the
+    # registration below survives until the Agent is GC'd. With a
+    # fresh-per-call factory the closure (and its ``turn_messages``
+    # list) dies at function exit. With a *cached* agent (e.g.
+    # ``make_app(cache_agents=True)`` reused across email turns) the
+    # callbacks would accumulate — every prior turn's _capture closure
+    # would also fire, and its turn_messages list would survive,
+    # producing both a leak and incorrect trace data. Email-webhook
+    # consumers MUST use ``cache_agents=False`` (the per-email
+    # ``extra_prompt`` injection makes caching wrong on its own merits
+    # anyway).
     turn_messages: list[Any] = []
 
     def _capture(event: Any) -> None:
         turn_messages.append(event.message)
 
     failure_reason: str | None = None
-    cm = lock_session(session_id) if lock_session else contextlib.nullcontext()
+    cm = lock_session(session_id) if lock_session else nullcontext()
     try:
         with cm:
             agent = build_agent(

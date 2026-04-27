@@ -95,10 +95,11 @@ def _wait_for_thread(timeout: float = 2.0) -> None:
     """Wait for the daemon thread spawned by the webhook to finish.
 
     The webhook fires-and-forgets, so test assertions need to wait for
-    the agent run to complete. Joining on the only non-main thread
-    is good enough for these tests.
+    the agent run to complete. Joining on every non-main daemon thread
+    is good enough — the webhook's thread is brief, and any other
+    daemon threads (e.g. httpx pool workers) just hit the timeout
+    cleanly without affecting test correctness.
     """
-    deadline = threading.current_thread()  # noqa: F841 — sentinel only
     for t in threading.enumerate():
         if t is threading.current_thread() or not t.daemon:
             continue

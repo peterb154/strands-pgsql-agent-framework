@@ -155,3 +155,45 @@ def test_missing_api_key_logs_and_returns(
         "AGENTMAIL_API_KEY missing" in rec.message
         for rec in caplog.records
     )
+
+
+def test_env_api_key_read_fresh_each_call(
+    monkeypatch: pytest.MonkeyPatch, captured_post: list[dict],
+) -> None:
+    """Rotated AGENTMAIL_API_KEY takes effect without restart.
+
+    The factory must NOT capture the env var at build time when
+    api_key is left ``None`` — otherwise rotated secrets keep using
+    the stale value until the process restarts.
+    """
+    monkeypatch.setenv("AGENTMAIL_API_KEY", "key-v1")
+    notify = agentmail_operator_notify(
+        "ops@example.com", "agent@bot.example.com",
+    )
+
+    notify(_failure_event())
+    assert captured_post[-1]["headers"]["Authorization"] == "Bearer key-v1"
+
+    # Rotate.
+    monkeypatch.setenv("AGENTMAIL_API_KEY", "key-v2")
+    notify(_failure_event())
+    assert captured_post[-1]["headers"]["Authorization"] == "Bearer key-v2"
+
+
+def test_path_traversal_in_inbox_is_quoted(
+    monkeypatch: pytest.MonkeyPatch, captured_post: list[dict],
+) -> None:
+    """Defense-in-depth: a misconfigured from_inbox can't path-traverse.
+
+    Operator-controlled value (env var), but the URL builder still
+    percent-encodes path separators so a typo can't reach an
+    unintended REST endpoint.
+    """
+    notify = agentmail_operator_notify(
+        "ops@example.com", "agent@bot.example.com/../sneaky",
+    )
+    notify(_failure_event())
+
+    url = captured_post[-1]["url"]
+    assert "/../" not in url
+    assert "%2F" in url or "%2f" in url
