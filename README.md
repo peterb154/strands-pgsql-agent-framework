@@ -334,18 +334,22 @@ or similar), the framework has a helper. It's **off by default** — you
 only pay the MCP + webhook cost if you wire it in.
 
 ```python
-from strands_pg import make_app, PgIdentity
+from strands_pg import (
+    PgIdentity, agentmail_operator_notify, make_app, session_lock,
+)
 from strands_pg.agentmail import attach_email_webhook, make_agentmail_mcp
 
 identities = PgIdentity()
 agentmail_mcp = make_agentmail_mcp()  # uses AGENTMAIL_API_KEY env var
 
-def build_agent(session_id: str, extra_prompt: str = "") -> Agent:
+def build_agent(
+    session_id: str, *, user_email: str, extra_prompt: str = "",
+) -> Agent:
     return Agent(
-        system_prompt=_system_prompt_for(session_id, extra_prompt),
+        system_prompt=_system_prompt_for(user_email, extra_prompt),
         tools=[
             *agentmail_mcp.list_tools_sync(),   # send/reply/threads
-            *memory_tools(namespace=session_id),
+            *memory_tools(namespace=user_email),  # keyed on identity, not session
             *your_domain_tools,
         ],
         session_manager=PgSessionManager(session_id=session_id),
@@ -357,6 +361,20 @@ attach_email_webhook(
     build_agent=build_agent,
     known_emails=lambda: {e.lower() for i in identities.list() for e in i.emails},
     agentmail_address=os.environ["AGENTMAIL_ADDRESS"],
+    # Scope each session to the email thread, not the sender —
+    # eliminates cross-thread context bleed and reduces same-session
+    # message_id races at the data layer.
+    session_id_for=lambda m: m.thread_id or m.message_id,
+    # Belt-and-suspenders against same-thread rapid replies and future
+    # multi-replica deploys where a Python lock wouldn't help.
+    lock_session=session_lock,
+    # Optional: notify an operator when the agent fails to reply.
+    # Email-out is appropriate when the agent has no UI to surface
+    # failures; chat-fronted agents typically omit this.
+    on_failure=agentmail_operator_notify(
+        os.environ["OPERATOR_EMAIL"],
+        os.environ["AGENTMAIL_ADDRESS"],
+    ),
 )
 ```
 
@@ -369,6 +387,59 @@ attach_email_webhook(
 - prompt injection telling the model it MUST call `reply_to_message` on
   the MCP to actually send the reply (without this, you'll find the
   agent generates beautiful responses that go nowhere)
+- per-turn message capture via a Strands `MessageAddedEvent` hook, so
+  failure traces survive Strands' sliding-window pruning and
+  partial-failure unwinds
+- on failure, dump the full tool trace in one `WARNING` log record (so
+  it shows up in `docker logs` even with no consumer log config) and
+  fire the `on_failure` callback if you wired one
+
+### `build_agent` signature
+
+The factory must accept `(session_id, *, user_email, extra_prompt="")`:
+
+- `session_id` — whatever `session_id_for` returned (typically the
+  thread_id). Pass to `PgSessionManager` so message history is scoped
+  per thread.
+- `user_email` — always the lowercased sender. Use this for identity
+  lookup, memory namespacing, and any per-user state. Decoupled from
+  `session_id` so threads ≠ users (one user can run many threads).
+- `extra_prompt` — pre-built block describing the inbound email's IDs
+  and the directive to call `reply_to_message`. Append to your system
+  prompt unchanged.
+
+### Failure callback contract
+
+`on_failure` receives a `FailureEvent` whenever the agent either raises
+or fails to call `reply_to_message` with `status="success"`. The
+framework provides only the mechanism — you choose the channel:
+
+```python
+from strands_pg import FailureEvent
+
+def slack_notify(event: FailureEvent) -> None:
+    requests.post(SLACK_WEBHOOK, json={
+        "text": f"Agent failed: {event.failure_reason}",
+        "trace": event.trace_lines,
+    })
+
+attach_email_webhook(..., on_failure=slack_notify)
+```
+
+For the no-UI / agentmail-only case, `agentmail_operator_notify(
+to_email, from_inbox)` is the convenience factory — sends via REST
+(bypassing the MCP since that's likely the failing path) and sets
+`Reply-To: noreply@<from-domain>` to break the operator-replies-to-bot
+feedback loop.
+
+### Scale note on `session_lock`
+
+`session_lock` holds a pool connection for the duration of the agent
+run (typically 30-60 seconds of model + tool latency). At the default
+psycopg pool size (~4), a small handful of concurrent same-process
+requests can saturate the pool. Fine at single-user / rare-burst
+scale; revisit with a dedicated lock-only pool if you start seeing
+pool exhaustion.
 
 ### Gotchas for email agents
 
@@ -597,6 +668,44 @@ When in doubt, diff a fresh stamp against your tree:
 bash install.sh /tmp/fresh-stamp --ref v0.7.0
 diff -r /tmp/fresh-stamp my-agent
 ```
+
+### Migrating from v0.7.0 to v0.8.0
+
+If your agent uses `attach_email_webhook`, two changes are required:
+
+1. **`build_agent` factory signature.** The `inspect.signature`-based
+   shim that auto-detected old `(session_id, extra_prompt="")` factories
+   is gone. Update the factory to keyword-only:
+
+    ```diff
+    -def build_agent(session_id: str, extra_prompt: str = "") -> Agent:
+    +def build_agent(
+    +    session_id: str, *, user_email: str, extra_prompt: str = "",
+    +) -> Agent:
+    ```
+
+   Use `user_email` for identity / memory namespacing; `session_id` is
+   the conversation key (typically the email thread_id).
+
+2. **`notify_email` kwarg removed.** Replaced by the more general
+   `on_failure: Callable[[FailureEvent], None]`. For the previous
+   email-out behavior:
+
+    ```diff
+    -attach_email_webhook(..., notify_email=os.environ["OPERATOR_EMAIL"])
+    +attach_email_webhook(
+    +    ...,
+    +    on_failure=agentmail_operator_notify(
+    +        os.environ["OPERATOR_EMAIL"],
+    +        os.environ["AGENTMAIL_ADDRESS"],
+    +    ),
+    +)
+    ```
+
+   The new factory adds a `Reply-To: noreply@<from-domain>` header by
+   default to break the operator-replies-to-bot feedback loop.
+
+Chat-fronted agents (no `attach_email_webhook`) need no changes.
 
 ## Deployment gotchas
 
