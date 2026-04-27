@@ -30,15 +30,18 @@ Notes on AgentMail's event types:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel
+from strands.hooks import MessageAddedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -251,26 +254,53 @@ def attach_email_webhook(
     agentmail_address: str = "",
     path: str = "/api/webhook/email",
     inbound_prompt_template: str = _DEFAULT_INBOUND_PROMPT,
+    session_id_for: Callable[[AgentMailMessage], str] | None = None,
+    lock_session: Callable[[str], AbstractContextManager[None]] | None = None,
+    on_failure: Callable[[FailureEvent], None] | None = None,
 ) -> None:
     """Register a ``POST /api/webhook/email`` route on ``app``.
 
     Args:
         app: the FastAPI instance (typically from ``make_app(...)``).
-        build_agent: must accept ``build_agent(session_id, extra_prompt="")``.
-            The helper calls it with ``session_id=<sender_email>`` and an
-            ``extra_prompt`` that includes the inbound email's IDs + a
-            directive to call ``reply_to_message``. If your ``build_agent``
-            doesn't accept ``extra_prompt``, wrap it.
+        build_agent: factory invoked per inbound email with signature
+            ``build_agent(session_id, *, user_email, extra_prompt="")``.
+            ``session_id`` is whatever ``session_id_for`` returns
+            (defaults to lowercased sender). ``user_email`` is always
+            the lowercased sender so identity / memory namespacing stays
+            tied to the person even when ``session_id`` is something
+            else (e.g. an AgentMail thread_id). ``extra_prompt`` carries
+            the inbound email's IDs and a directive to call
+            ``reply_to_message``.
         known_emails: called per-request; returns the set of emails
-            allowed to trigger the agent. Dynamic (so new identities work
-            immediately). Lowercase all entries.
+            allowed to trigger the agent. Dynamic (so new identities
+            work immediately). Lowercase all entries.
         agentmail_address: the agent's own send-from address, lowercase.
             Used for echo-loop prevention (skip messages from self).
         path: URL path for the webhook. Default ``/api/webhook/email``.
         inbound_prompt_template: Python ``str.format``-style template
-            with ``{inbox_id} {message_id} {thread_id} {subject} {sender}
-            {cc}`` placeholders. Override if your agent's rules need
-            different framing.
+            with ``{inbox_id} {message_id} {thread_id} {subject}
+            {sender} {cc}`` placeholders. Override if your agent's rules
+            need different framing.
+        session_id_for: optional callable returning the session_id for a
+            given inbound message. Defaults to the lowercased sender —
+            historic sender-as-session behavior. Recommended:
+            ``lambda m: m.thread_id or m.message_id`` to scope sessions
+            per email thread (eliminates cross-thread context bleed and
+            reduces same-session message_id races at the data layer).
+        lock_session: optional callable returning a context manager that
+            holds a session-scoped lock for the duration of an agent
+            run. ``strands_pg.session_lock`` is the intended impl.
+            Without it, two webhooks for the same session_id can race
+            on Strands' message_id arithmetic and crash the in-flight
+            agent with a unique-constraint violation.
+        on_failure: optional callback fired when the agent either
+            raises or fails to call ``reply_to_message`` with
+            ``status="success"``. Receives a ``FailureEvent`` carrying
+            the inbound message, sender, failure reason, and full tool
+            trace. The framework does not assume any particular
+            delivery channel — wire ``agentmail_operator_notify`` for
+            agentmail-only / no-UI agents, or anything else (Slack,
+            PagerDuty) by writing your own callable.
     """
     processed: set[str] = set()
 
@@ -302,9 +332,23 @@ def attach_email_webhook(
         if sender not in known_emails():
             return {"status": "skipped", "reason": "unknown sender"}
 
+        # session_id_for is consumer-supplied; if it raises (bug in the
+        # lambda, malformed payload, etc.) fall back to sender so the
+        # webhook keeps its always-200 contract — n8n / AgentMail
+        # shouldn't see 5xx for what's effectively a misconfiguration.
+        try:
+            session_id = session_id_for(msg) if session_id_for else sender
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "session_id_for raised for inbound %s; falling back to sender",
+                msg.message_id,
+            )
+            session_id = sender
+
         threading.Thread(
             target=_process,
-            args=(build_agent, msg, sender, inbound_prompt_template),
+            args=(build_agent, msg, sender, session_id,
+                  inbound_prompt_template, lock_session, on_failure),
             daemon=True,
         ).start()
         return {"status": "accepted", "message_id": msg.message_id}
@@ -314,7 +358,10 @@ def _process(
     build_agent: Callable[..., Any],
     msg: AgentMailMessage,
     sender: str,
+    session_id: str,
     template: str,
+    lock_session: Callable[[str], AbstractContextManager[None]] | None,
+    on_failure: Callable[[FailureEvent], None] | None,
 ) -> None:
     body = msg.extracted_text or msg.text or msg.html or ""
     if not body:
@@ -330,8 +377,69 @@ def _process(
         cc=", ".join(msg.cc) if msg.cc else "(none)",
     )
 
+    # Capture this turn's messages via a Strands hook rather than slicing
+    # ``agent.messages`` after the run. Slicing is unreliable: Strands'
+    # default sliding-window conversation manager and the
+    # ``_fix_broken_tool_use`` path can both replace ``agent.messages``
+    # wholesale during a cycle, invalidating the length snapshot. The
+    # hook fires once per appended message — robust against in-place
+    # pruning, list replacement, and partial-failure unwinds.
+    turn_messages: list[Any] = []
+
+    def _capture(event: Any) -> None:
+        turn_messages.append(event.message)
+
+    failure_reason: str | None = None
+    cm = lock_session(session_id) if lock_session else contextlib.nullcontext()
     try:
-        agent = build_agent(sender, extra_prompt=extra)
-        agent(body)
-    except Exception:  # noqa: BLE001
+        with cm:
+            agent = build_agent(
+                session_id, user_email=sender, extra_prompt=extra,
+            )
+            # Register AFTER build_agent returns: PgSessionManager
+            # registers its own MessageAddedEvent persistence callback
+            # during Agent construction, and HookRegistry runs callbacks
+            # in registration order. Persisting first means if
+            # persistence raises, our capture for that message doesn't
+            # fire — but agent(body) propagates the exception, and the
+            # except block synthesizes a Python-exception failure_reason
+            # below. Don't move this line up.
+            agent.hooks.add_callback(MessageAddedEvent, _capture)
+            agent(body)
+    except Exception as e:  # noqa: BLE001
         logger.exception("agent processing failed for message %s", msg.message_id)
+        failure_reason = f"Python exception: {type(e).__name__}: {e}"
+
+    reply_status, trace_lines = walk_tool_trace(turn_messages)
+    if failure_reason is None and reply_status != "success":
+        failure_reason = (
+            f"reply_to_message not successfully called "
+            f"(last status={reply_status!r})"
+        )
+
+    if failure_reason is None:
+        return
+
+    # Dump the full trace in one WARNING record so it shows up via
+    # Python's lastResort handler even when the consumer hasn't
+    # configured logging. Per-line INFO would be silently filtered at
+    # default log levels — and we don't want to dictate consumer log
+    # config from a framework.
+    trace_block = "\n  ".join(trace_lines) or "(no tool calls recorded)"
+    logger.warning(
+        "[email %s] agent failed: %s\n  trace:\n  %s",
+        msg.message_id, failure_reason, trace_block,
+    )
+
+    if on_failure is not None:
+        try:
+            on_failure(FailureEvent(
+                inbound_message=msg,
+                sender=sender,
+                failure_reason=failure_reason,
+                trace_lines=trace_lines,
+            ))
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "on_failure callback raised for inbound %s", msg.message_id,
+            )
