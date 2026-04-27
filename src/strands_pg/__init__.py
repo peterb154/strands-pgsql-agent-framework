@@ -27,4 +27,4 @@ __all__ = [
     "session_lock",
     "walk_tool_trace",
 ]
-__version__ = "0.7.0"
+__version__ = "0.8.0"

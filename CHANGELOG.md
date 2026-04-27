@@ -1,6 +1,138 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-04-27)
+
+### Bug Fixes
+
+- Address PR review feedback
+  ([`55e9dcf`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/55e9dcf06d026617a355b6b58e82db2ec347a394))
+
+- agentmail_operator_notify: read AGENTMAIL_API_KEY fresh on each call when api_key is None, so
+  rotated secrets pick up without a restart. Docstring clarified. - agentmail_operator_notify:
+  percent-encode the from_inbox path segment in the REST URL so a misconfigured env var can't
+  path-traverse. AgentMail addresses contain @ legitimately, so that character stays unescaped. -
+  agentmail.py: lift httpx and contextlib.nullcontext to module-level imports — both are hard deps
+  and the deferred-import pattern was unwarranted overhead per call. - _process: document the
+  build_agent-returns-fresh-Agent assumption near the MessageAddedEvent registration. Strands'
+  HookRegistry has no remove_callback, so cache_agents=True would accumulate _capture closures
+  across turns and produce a leak + incorrect trace data. Email-webhook consumers must use
+  cache_agents=False. - test_email_webhook._wait_for_thread: drop the misleading ``deadline =
+  threading.current_thread()`` dead-code line. - Add two operator_notify tests: env key read freshly
+  per call, and path-traversal characters in from_inbox get percent-encoded.
+
+Refs #1 #2
+
+### Documentation
+
+- Readme email-webhook section + v0.7.0 → v0.8.0 migration note
+  ([`85f47ab`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/85f47ab14238c329d3e317a78a4682457ccfb929))
+
+Updates the Email agents quickstart to use the new build_agent contract (user_email kwarg) and the
+  new optional kwargs (session_id_for, lock_session, on_failure). Adds:
+
+- A "build_agent signature" subsection explaining session_id vs user_email decoupling. - A "Failure
+  callback contract" subsection with a Slack example alongside the agentmail_operator_notify
+  convenience factory. - A scale note on session_lock's connection-hold behavior. - A "Migrating
+  from v0.7.0 to v0.8.0" subsection with concrete diffs for the two breaking changes consumers will
+  hit: build_agent signature and notify_email -> on_failure.
+
+Refs #1
+
+### Features
+
+- Add agentmail_operator_notify convenience factory
+  ([`f8de1af`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/f8de1af50c8a56f280aa1ff8018daa4898b68ff9))
+
+Builds a ``Callable[[FailureEvent], None]`` suitable for the new ``attach_email_webhook(...,
+  on_failure=...)`` callback. Sends a failure-notification email via AgentMail's REST API (``POST
+  /v0/inboxes/{from_inbox}/messages/send``).
+
+Bypasses the MCP send tool intentionally — if the agent failure was *in* the MCP path, retrying
+  through it would just fail again.
+
+Sets ``Reply-To: noreply@<from-domain>`` by default to break the operator-replies-to-failure-email
+  feedback loop. Custom reply_to accepted as a kwarg.
+
+This is opt-in: the factory lives in strands_pg.agentmail and is exported from the package, but
+  ``attach_email_webhook`` does not default to it. Chat-fronted agents that surface failures in
+  their UI typically pass nothing for ``on_failure``; agentmail-only / no-UI consumers wire this
+  factory.
+
+Refs #1
+
+- Add session_lock advisory-lock helper
+  ([`ac23ed1`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/ac23ed1b931570e1ceda4a0dfeec7c9f15856e70))
+
+Same-session concurrent agent runs race on Strands' message_id arithmetic and crash with a
+  unique-constraint violation, silently dropping whatever tool call was in progress (incl. reply
+  MCPs). session_lock(session_id) wraps an agent run in a Postgres advisory lock keyed on
+  hashtext(session_id), serializing same-session writes across processes and replicas.
+
+Best-effort unlock on exit: Postgres releases session-level advisory locks automatically when the
+  connection closes, so a failed unlock is logged and swallowed rather than masking the user's real
+  exception.
+
+Tests hit a real Postgres and skip when unreachable.
+
+Refs #1
+
+- Add walk_tool_trace + FailureEvent observability helpers
+  ([`2fd7848`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/2fd7848ad76af666c4a4a879c82a13061e1b8832))
+
+Strands' default per-cycle logger emits ``Tool #N: name`` markers but drops args/results, so a tool
+  that returns an error result (rather than raising) leaves no diagnostic trail. walk_tool_trace
+  walks a list of Strands messages and rebuilds (toolUse, toolResult) pairs into a human-readable
+  trace, including orphan toolUses surfaced as ``status=(no result)`` for cycles that exited
+  mid-tool.
+
+Pure: returns data, emits no log records — caller decides what to do with the lines. Replaces the
+  camping-db ``_log_tool_trace`` which mixed return-value + ``logger.info`` side effects.
+
+FailureEvent is a frozen dataclass carrying the inbound message, sender, failure reason, and trace
+  lines. Will be passed to the new ``on_failure`` callback in the email-webhook refactor (next
+  commit).
+
+Refs #1
+
+- Pluggable on_failure + session/lock kwargs for email webhook
+  ([`1b488a1`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/1b488a1ea8e587a3642a0b61e6b00a59387f88eb))
+
+Replaces the camping-db-shaped agent observability path with a clean upstream API. Three behavioral
+  changes, one breaking signature change.
+
+Behavioral changes:
+
+* Per-turn message capture uses a MessageAddedEvent hook callback instead of slicing agent.messages
+  after the run. Slicing was unreliable: Strands' default conversation manager and the
+  _fix_broken_tool_use path can replace agent.messages wholesale during a cycle, invalidating the
+  length snapshot. Hook capture is robust against in-place pruning, list replacement, and
+  partial-failure unwinds.
+
+* On failure, dump the full tool trace in one logger.warning record. Python's lastResort handler
+  emits WARNING+ even with no handler configured, so the diagnostic trace shows up in docker logs
+  regardless of whether the consumer set up logging.basicConfig. Per-line INFO would be silently
+  filtered by default.
+
+* Three new optional kwargs on attach_email_webhook:
+
+- session_id_for: Callable[[AgentMailMessage], str] — consumer picks the keying. Defaults to
+  lowercased sender (historic). Recommended: ``lambda m: m.thread_id or m.message_id`` to eliminate
+  cross-thread races at the data layer. - lock_session: Callable[[str], ContextManager] — wraps the
+  agent run in a session-scoped lock. Use strands_pg.session_lock. - on_failure:
+  Callable[[FailureEvent], None] — fired when the agent raises or fails to call reply_to_message
+  successfully. Framework provides only the mechanism; consumers wire their own delivery channel
+  (email, Slack, PagerDuty). Replaces the empty-string-as-sentinel notify_email kwarg.
+
+Migration note: build_agent factory must now accept the kwarg-only contract ``(session_id, *,
+  user_email, extra_prompt="")``. The ``inspect.signature`` introspection that supported the older
+  ``(session_id, extra_prompt="")`` shape is gone. Migration is mechanical: add ``user_email`` to
+  the factory signature and optionally use it for identity / memory namespacing. Old factories fail
+  loudly via on_failure with a TypeError that names user_email.
+
+Refs #1
+
+
 ## v0.7.0 (2026-04-21)
 
 ### Features
