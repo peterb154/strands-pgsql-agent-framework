@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -28,6 +30,53 @@ from strands.types.session import Session, SessionAgent, SessionMessage
 from strands_pg._pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def session_lock(session_id: str, dsn: str | None = None) -> Iterator[None]:
+    """Hold a Postgres advisory lock for the duration of an agent run.
+
+    Strands' ``RepositorySessionManager`` computes the next ``message_id``
+    in-memory from the prior turn's state and INSERTs into
+    ``session_messages``. Two concurrent agent runs on the same session
+    both compute the same next ``message_id`` and one loses the unique
+    constraint, crashing the in-flight agent — and silently dropping
+    whatever tool call was about to run, including a reply MCP.
+
+    Wrapping the agent run in this context manager serializes
+    same-session writes via ``pg_advisory_lock(hashtext(session_id))``.
+    Postgres-level (not Python-level) so it works across processes and
+    replicas. Different ``session_id`` values hash to different keys and
+    don't contend.
+
+    The lock is held by the connection for the lifetime of the ``with``
+    block. Postgres releases session-level advisory locks automatically
+    when the connection closes, so the explicit unlock here is hygiene,
+    not correctness; a failed unlock is logged and swallowed rather than
+    raising and masking the user's real exception.
+
+    Scale note: this holds a pool connection for the full agent run
+    (typically 30-60s of model + tool latency). At default psycopg pool
+    size (~4), a handful of concurrent same-process requests can saturate
+    the pool. Fine at single-user / rare-burst scale; revisit with a
+    dedicated lock-only pool if it bites.
+    """
+    pool = get_pool(dsn)
+    with pool.connection() as conn:
+        conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (session_id,))
+        try:
+            yield
+        finally:
+            try:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s))", (session_id,)
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "advisory unlock failed for session_id=%s; "
+                    "Postgres will release on session close",
+                    session_id,
+                )
 
 
 class PgSessionManager(RepositorySessionManager, SessionRepository):
