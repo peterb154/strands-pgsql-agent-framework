@@ -182,6 +182,105 @@ def walk_tool_trace(
     return reply_status, trace_lines
 
 
+def agentmail_operator_notify(
+    to_email: str,
+    from_inbox: str,
+    *,
+    reply_to: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 15.0,
+) -> Callable[[FailureEvent], None]:
+    """Convenience factory for the no-UI / agentmail-only failure path.
+
+    Returns a callable suitable for ``attach_email_webhook(...,
+    on_failure=...)``. When invoked with a ``FailureEvent`` it sends a
+    failure-notification email via AgentMail's REST API:
+    ``POST /v0/inboxes/{from_inbox}/messages/send``.
+
+    Bypasses the MCP send tool intentionally — if the agent failure
+    was *in* the MCP path (auth, transport, server-side), routing the
+    notification through the same path would just fail again the same
+    way, leaving the operator silent.
+
+    Sets a ``Reply-To`` header pointing at ``noreply@<from-domain>``
+    by default. This breaks an otherwise-easy feedback loop: without
+    it, an operator hitting Reply on a failure email lands a message
+    at the agent's inbox FROM a known sender — triggering a fresh
+    agent run on the failure trace.
+
+    Args:
+        to_email: where to send notifications (the operator).
+        from_inbox: the agent's own AgentMail inbox address; the
+            notification is sent FROM here. Used both as the REST path
+            parameter and as the source for the default reply_to.
+        reply_to: optional override for the Reply-To header. Defaults
+            to ``noreply@<from_inbox-domain>``.
+        api_key: optional AGENTMAIL_API_KEY override. Defaults to env.
+        timeout: HTTP timeout for the send POST. The notification path
+            should never block the webhook handler indefinitely.
+
+    Chat-fronted agents that surface failures in their UI typically
+    don't need this — pass nothing for ``on_failure``.
+    """
+    key = api_key or os.environ.get("AGENTMAIL_API_KEY")
+    domain = from_inbox.split("@", 1)[-1] if "@" in from_inbox else from_inbox
+    default_reply_to = reply_to or f"noreply@{domain}"
+
+    def _notify(event: FailureEvent) -> None:
+        if not key:
+            logger.warning(
+                "AGENTMAIL_API_KEY missing; cannot notify %s of failure on %s",
+                to_email, event.inbound_message.message_id,
+            )
+            return
+
+        import httpx
+
+        trace_block = "\n".join(event.trace_lines) or "(no tool calls recorded)"
+        text = (
+            f"Agent failed to reply to an inbound email.\n\n"
+            f"From:       {event.sender}\n"
+            f"Subject:    {event.inbound_message.subject!r}\n"
+            f"Message ID: {event.inbound_message.message_id}\n"
+            f"Thread ID:  {event.inbound_message.thread_id}\n\n"
+            f"Failure:\n  {event.failure_reason}\n\n"
+            f"Tool trace:\n{trace_block}\n"
+        )
+        try:
+            r = httpx.post(
+                f"https://api.agentmail.to/v0/inboxes/{from_inbox}/messages/send",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "to": to_email,
+                    "subject": (
+                        f"reply failed: "
+                        f"{event.inbound_message.subject or '(no subject)'}"
+                    ),
+                    "text": text,
+                    "reply_to": default_reply_to,
+                },
+                timeout=timeout,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "failed to send operator notification to %s for inbound %s",
+                to_email, event.inbound_message.message_id,
+            )
+            return
+        if r.status_code >= 400:
+            logger.error(
+                "operator notification to %s rejected for inbound %s: "
+                "%s %s body=%r",
+                to_email, event.inbound_message.message_id,
+                r.status_code, r.reason_phrase, r.text[:500],
+            )
+
+    return _notify
+
+
 # ---------------------------------------------------------------------------
 # MCP client helper
 # ---------------------------------------------------------------------------

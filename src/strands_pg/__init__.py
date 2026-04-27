@@ -1,6 +1,10 @@
 """Postgres-backed primitives for Strands agents."""
 
-from strands_pg.agentmail import FailureEvent, walk_tool_trace
+from strands_pg.agentmail import (
+    FailureEvent,
+    agentmail_operator_notify,
+    walk_tool_trace,
+)
 from strands_pg.api import commit_sha, make_app
 from strands_pg.identity import Identity, PgIdentity
 from strands_pg.memory import PgMemoryStore
@@ -16,6 +20,7 @@ __all__ = [
     "Identity",
     "Prompt",
     "FailureEvent",
+    "agentmail_operator_notify",
     "make_app",
     "memory_tools",
     "commit_sha",
