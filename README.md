@@ -707,6 +707,57 @@ If your agent uses `attach_email_webhook`, two changes are required:
 
 Chat-fronted agents (no `attach_email_webhook`) need no changes.
 
+### Migrating from v0.8.0 to v0.9.0
+
+**Breaking:** `PgMemoryStore.delete` now requires a `namespace` keyword, and
+that namespace must be a `str` — `None` is rejected. Only agents that call
+`delete` directly are affected; `memory_tools` doesn't expose deletion, so
+most agents need no changes.
+
+```diff
+-store.delete(memory_id)
++store.delete(memory_id, namespace=f"user:{email}")
+```
+
+Use the namespace of the user whose memory it is. A mismatch removes nothing
+and returns `False`; surface that to the caller as not-found, not as "wrong
+tenant" — the latter leaks whether the row exists.
+
+To delete regardless of namespace, there is now a separate method:
+
+```python
+store.delete_across_namespaces(memory_id)   # admin / prune scripts only
+```
+
+It's a distinct name rather than a `namespace=None` flag on purpose.
+`add`, `search`, and `list` all read `None` as *"the default namespace"*, so
+having `delete` read it as *"every namespace"* would mean a `str | None`
+variable threaded through what looks like the same argument silently turns a
+scoped delete into a cross-tenant one — the very bug being fixed, wearing the
+fix's clothes. Requiring `str` makes that a type error instead.
+
+Why required at all: row ids are `BIGSERIAL` and the built-in recall tool
+renders hits as `- [id] text`, so every user sees live ids. An unscoped
+delete on a multi-tenant deployment (`memory_tools(namespaces={...})`) lets
+one tenant remove another's memories by guessing an integer. See
+[#3](https://github.com/peterb154/strands-pgsql-agent-framework/issues/3).
+
+Also in this release, all additive:
+
+```python
+store.update(memory_id, "corrected text", namespace=f"user:{email}")
+```
+
+`update()` is the missing corner of the CRUD. Without it, "fix the wording
+of this note" degrades into delete-then-add, which isn't atomic — a failure
+between the two loses the note with no rollback — and restamps `id` and
+`created_at`, so an April fact edited today starts claiming it was written
+today. `text` and `embedding` are replaced together, so `search` follows the
+new wording instead of matching the old one and returning the new text.
+Scoped exactly like `delete`; a mismatch changes nothing and returns `False`.
+
+`list()` takes an `offset` for paging, and `MemoryHit` carries `created_at`.
+
 ## Deployment gotchas
 
 A few things that aren't framework bugs but that have bitten real agents
