@@ -115,6 +115,46 @@ class PgMemoryStore:
             for r in rows
         ]
 
+    def update(self, memory_id: int, text: str, *, namespace: str) -> bool:
+        """Replace a memory's text in place, re-embedding. True if updated.
+
+        The missing corner of the CRUD. Without it, "fix the wording of this
+        note" degrades into delete-then-add, which is not atomic (a failure
+        between the two loses the note with no rollback) and restamps ``id``
+        and ``created_at``, so an April fact edited today starts claiming it
+        was written today.
+
+        ``id``, ``created_at``, and ``metadata`` are preserved; ``text`` and
+        ``embedding`` are replaced together. They have to move together — an
+        update that rewrote the text without re-embedding would leave
+        ``search`` matching the old wording while returning the new text.
+
+        ``namespace`` is scoped exactly as in ``delete``: required,
+        keyword-only, no ``None``. Ids are sequential and shown to callers,
+        so an unscoped update would let one tenant overwrite another's
+        memories — worse than an unscoped delete, since the victim keeps a
+        note that no longer says what they wrote. A mismatch changes nothing
+        and returns ``False``; surface it as not-found.
+
+        The embedding is computed before the connection is checked out, so a
+        slow embedder doesn't hold a pooled connection. The cost is that an
+        update against a wrong id/namespace still pays for one embedding —
+        cheaper than a check-then-update round trip that would race anyway.
+        """
+        embedding = self._embedder(text)
+
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE memories
+                SET text = %s, embedding = %s::vector
+                WHERE id = %s AND namespace = %s
+                """,
+                (text, embedding, memory_id, namespace),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     def delete(self, memory_id: int, *, namespace: str) -> bool:
         """Delete by id within ``namespace``. True if a row was removed.
 

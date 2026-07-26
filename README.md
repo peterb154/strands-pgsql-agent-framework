@@ -742,8 +742,21 @@ delete on a multi-tenant deployment (`memory_tools(namespaces={...})`) lets
 one tenant remove another's memories by guessing an integer. See
 [#3](https://github.com/peterb154/strands-pgsql-agent-framework/issues/3).
 
-Also in this release, both additive: `list()` takes an `offset` for paging,
-and `MemoryHit` carries `created_at`.
+Also in this release, all additive:
+
+```python
+store.update(memory_id, "corrected text", namespace=f"user:{email}")
+```
+
+`update()` is the missing corner of the CRUD. Without it, "fix the wording
+of this note" degrades into delete-then-add, which isn't atomic — a failure
+between the two loses the note with no rollback — and restamps `id` and
+`created_at`, so an April fact edited today starts claiming it was written
+today. `text` and `embedding` are replaced together, so `search` follows the
+new wording instead of matching the old one and returning the new text.
+Scoped exactly like `delete`; a mismatch changes nothing and returns `False`.
+
+`list()` takes an `offset` for paging, and `MemoryHit` carries `created_at`.
 
 ## Deployment gotchas
 

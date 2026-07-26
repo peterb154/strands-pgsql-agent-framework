@@ -149,6 +149,59 @@ def test_delete_with_none_namespace_fails_closed(
         _cleanup(alice, bob)
 
 
+def test_update_preserves_identity_and_reembeds(
+    store: PgMemoryStore, namespaces: tuple[str, str]
+) -> None:
+    """The acceptance criteria from mealie-agent#15, in one pass.
+
+    Editing preserves id and created_at (that's the whole point — otherwise
+    delete-then-add would do), and search follows the new wording rather
+    than the old, which is the part that's easy to get wrong.
+    """
+    alice, bob = namespaces
+    try:
+        mid = store.add("Bes prefers gluten-free and also dislikes pork", namespace=alice)
+        before = store.list(namespace=alice)[0]
+
+        assert store.update(mid, "Bes prefers gluten-free", namespace=alice) is True
+
+        after = store.list(namespace=alice)[0]
+        assert after.id == mid  # identity preserved
+        assert after.created_at == before.created_at  # provenance preserved
+        assert after.text == "Bes prefers gluten-free"
+
+        # The embedding moved with the text: the new wording is an exact hit,
+        # the dropped wording no longer is.
+        exact = store.search("Bes prefers gluten-free", k=1, namespace=alice)[0]
+        assert exact.id == mid
+        assert exact.distance == pytest.approx(0.0, abs=1e-6)
+
+        stale = store.search(
+            "Bes prefers gluten-free and also dislikes pork", k=1, namespace=alice
+        )[0]
+        assert stale.distance > 1e-6
+    finally:
+        _cleanup(alice, bob)
+
+
+def test_update_wrong_namespace_changes_nothing(
+    store: PgMemoryStore, namespaces: tuple[str, str]
+) -> None:
+    """Cross-tenant overwrite is worse than cross-tenant delete — the victim
+    keeps a note that no longer says what they wrote."""
+    alice, bob = namespaces
+    try:
+        mid = store.add("alice's original note", namespace=alice)
+
+        assert store.update(mid, "bob's replacement text", namespace=bob) is False
+
+        surviving = store.list(namespace=alice)[0]
+        assert surviving.id == mid
+        assert surviving.text == "alice's original note"
+    finally:
+        _cleanup(alice, bob)
+
+
 def test_search_never_crosses_namespaces(store: PgMemoryStore, namespaces: tuple[str, str]) -> None:
     alice, bob = namespaces
     try:
