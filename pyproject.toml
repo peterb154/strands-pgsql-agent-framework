@@ -66,8 +66,20 @@ tag_format = "v{version}"
 # Pre-1.0: a breaking change bumps the minor (0.8 -> 0.9), not to 1.0.0.
 # Without this, `feat!:` / BREAKING CHANGE would cut 1.0.0 and claim an API
 # stability guarantee this project isn't making yet. Set to true when we do
-# mean to make it. Breaking commits still get their own changelog section —
-# that's the point of marking them, independent of the number they produce.
+# mean to make it.
+#
+# Marking a breaking change takes BOTH of these, and v0.9.0 shipped with
+# only the first:
+#
+#   1. `!` after the type — `feat(memory)!:` — classifies the bump.
+#   2. A `BREAKING CHANGE: <what broke>` footer in the commit body —
+#      this, and only this, renders the changelog's Breaking Changes
+#      section. The `!` alone leaves the commit filed under Features.
+#
+# The omission is invisible from the version number, because with
+# major_on_zero = false a breaking change and a plain feat: both produce a
+# minor bump. v0.9.0's release notes carry a hand-written banner as a
+# result. Write the footer.
 major_on_zero = false
 
 [tool.semantic_release.branches.main]
