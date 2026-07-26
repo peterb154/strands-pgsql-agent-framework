@@ -707,6 +707,31 @@ If your agent uses `attach_email_webhook`, two changes are required:
 
 Chat-fronted agents (no `attach_email_webhook`) need no changes.
 
+### Migrating from v0.8.0 to v0.9.0
+
+`PgMemoryStore.delete` now requires a `namespace` keyword. Only agents that
+call `delete` directly are affected — `memory_tools` doesn't expose deletion,
+so most agents need no changes.
+
+```diff
+-store.delete(memory_id)
++store.delete(memory_id, namespace=f"user:{email}")
+```
+
+Pass the same namespace you pass to `search`. A mismatch removes nothing and
+returns `False`; surface that to the caller as not-found. The old
+delete-anything behavior is still available as `delete(memory_id,
+namespace=None)` for admin/prune scripts — it just has to be asked for now.
+
+The reason it's required rather than optional: row ids are `BIGSERIAL` and
+the built-in recall tool renders hits as `- [id] text`, so every user sees
+live ids. An unscoped delete on a multi-tenant deployment (`memory_tools(
+namespaces={...})`) lets one tenant remove another's memories by guessing an
+integer. See [#3](https://github.com/peterb154/strands-pgsql-agent-framework/issues/3).
+
+Also in this release, both additive: `list()` takes an `offset` for paging,
+and `MemoryHit` carries `created_at`.
+
 ## Deployment gotchas
 
 A few things that aren't framework bugs but that have bitten real agents

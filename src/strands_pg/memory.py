@@ -18,6 +18,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -38,6 +39,7 @@ class MemoryHit:
     text: str
     metadata: dict[str, Any]
     distance: float  # cosine distance in [0, 2]; lower = closer
+    created_at: datetime | None = None  # None only if constructed by hand
 
 
 class PgMemoryStore:
@@ -90,7 +92,7 @@ class PgMemoryStore:
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, namespace, text, metadata,
+                SELECT id, namespace, text, metadata, created_at,
                        embedding <=> %s::vector AS distance
                 FROM memories
                 WHERE namespace = %s
@@ -107,15 +109,39 @@ class PgMemoryStore:
                 namespace=r[1],
                 text=r[2],
                 metadata=r[3] if isinstance(r[3], dict) else {},
-                distance=float(r[4]),
+                created_at=r[4],
+                distance=float(r[5]),
             )
             for r in rows
         ]
 
-    def delete(self, memory_id: int) -> bool:
-        """Delete by id. Returns True if a row was removed."""
+    def delete(self, memory_id: int, *, namespace: str | None) -> bool:
+        """Delete by id, scoped to ``namespace``. True if a row was removed.
+
+        ``namespace`` is required and has no default on purpose. Row ids are
+        sequential (``BIGSERIAL``) and are shown to callers — the built-in
+        recall tool renders hits as ``- [id] text`` — so an unscoped delete
+        lets any tenant remove another tenant's memories by guessing an
+        integer. Pass the same namespace you'd pass to ``search``:
+
+            store.delete(mid, namespace=f"user:{email}")
+
+        A namespace mismatch removes nothing and returns ``False``, which
+        callers should surface as not-found (not as "wrong tenant" — that
+        would leak the existence of the row).
+
+        Pass ``namespace=None`` to delete across every namespace. That's the
+        old behavior, kept for admin/prune scripts, and now has to be said
+        out loud rather than being what you get by forgetting an argument.
+        """
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
+            if namespace is None:
+                cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
+            else:
+                cur.execute(
+                    "DELETE FROM memories WHERE id = %s AND namespace = %s",
+                    (memory_id, namespace),
+                )
             conn.commit()
             return cur.rowcount > 0
 
@@ -123,19 +149,24 @@ class PgMemoryStore:
         self,
         namespace: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[MemoryHit]:
-        """Most-recent-first list. Convenience; not embedded."""
+        """Most-recent-first list. Convenience; not embedded.
+
+        ``offset`` pages through a namespace larger than one call: the ids
+        are stable, so ``list(ns, limit=100, offset=100)`` is the second page.
+        """
         ns = namespace or self._default_namespace
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, namespace, text, metadata
+                SELECT id, namespace, text, metadata, created_at
                 FROM memories
                 WHERE namespace = %s
-                ORDER BY created_at DESC
-                LIMIT %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s OFFSET %s
                 """,
-                (ns, limit),
+                (ns, limit, offset),
             )
             rows = cur.fetchall()
         return [
@@ -144,6 +175,7 @@ class PgMemoryStore:
                 namespace=r[1],
                 text=r[2],
                 metadata=r[3] if isinstance(r[3], dict) else {},
+                created_at=r[4],
                 distance=0.0,
             )
             for r in rows
