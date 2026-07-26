@@ -1,6 +1,155 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-07-26)
+
+### Continuous Integration
+
+- Bump pinned actions to current majors
+  ([`b27c83f`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/b27c83f099d0acaf10d5dcec39987df35bc091f8))
+
+Pinning by SHA in 787fc4b froze the versions I'd written from memory, and the run flagged
+  setup-uv@v5 as targeting deprecated Node 20. It was four majors stale (latest v9.0.0); checkout
+  was one behind (v7.0.1). Both now pinned to the current release, with the version in the trailing
+  comment.
+
+That's the cost of SHA pinning: it stops silent drift in both directions, so bumps have to be
+  deliberate. Worth it for actions holding repo credentials, but it means the comment is the only
+  thing telling a reader how stale a pin is — keep it accurate.
+
+Refs #3
+
+### Features
+
+- **memory**: Add PgMemoryStore.update for edit-in-place
+  ([`3613ab2`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/3613ab2019ac029382a74ca1af2941e81babdd81))
+
+The missing corner of the CRUD. Requested in mealie-agent#15 and landed here rather than in a later
+  release because it touches the same class and the same migration note — splitting them means
+  downstream eats the re-stamp churn twice.
+
+Without update, "fix the wording of this note" degrades into delete-then-add, which mealie-agent#15
+  observed an agent actually doing. That substitute is wrong three ways: it isn't atomic (a failure
+  between the two calls loses the note with no rollback, and the agent reports the delete as having
+  succeeded), it restamps id and created_at so an April fact edited today claims it was written
+  today — corrupting the exact signal an audit view exists to show — and it pays for an extra
+  embedding round trip to express an UPDATE as an INSERT.
+
+update(memory_id, text, *, namespace: str) preserves id, created_at and metadata, and replaces text
+  and embedding together. They have to move together: rewriting text without re-embedding leaves
+  search matching the old wording while returning the new text, which is the one genuinely easy
+  thing to get wrong here.
+
+Namespace scoping is identical to delete, and for a sharper reason — an unscoped update overwrites
+  another tenant's memory instead of removing it, so the victim keeps a note that no longer says
+  what they wrote. Mismatch changes nothing and returns False.
+
+Embedding is computed before the connection is checked out so a slow embedder doesn't hold a pooled
+  connection; the cost is one wasted embedding on a bad id, cheaper than a check-then-update that
+  would race.
+
+updated_at is deliberately not added — it needs a migration and mealie-agent#15 scopes it as a
+  separate call.
+
+Refs #3
+
+- **memory**: Require namespace on PgMemoryStore.delete
+  ([`72dd65b`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/72dd65b096621638d3e972ef2df76e39b2580c58))
+
+delete() took an id alone while add/search/list are all namespace-partitioned, so any agent surface
+  exposing deletion let one tenant remove another tenant's memories by guessing an integer. Ids are
+  BIGSERIAL and the recall tool renders hits as "- [id] text", so callers routinely see live ids.
+
+namespace is now a required keyword with no default. Cross-namespace deletion stays available as
+  delete(id, namespace=None) for admin/prune scripts, but has to be stated rather than being what
+  you get by forgetting an argument. A mismatch removes nothing and returns False.
+
+Two related gaps from the same report, both additive: - list() takes offset, so a namespace larger
+  than one call can be paged. Ordering gains an id tiebreaker so pages don't overlap when timestamps
+  tie. - MemoryHit carries created_at, populated by both list() and search().
+
+Tests run against real Postgres following the test_session_lock pattern: wrong-namespace delete
+  leaves the row intact, correct-namespace removes it, unscoped delete() raises TypeError, offset
+  pages cover rows exactly once.
+
+uv.lock picks up an unrelated one-line version correction (0.6.0 -> 0.8.0) that any uv run
+  regenerates.
+
+Refs #3
+
+- **memory**: Split unscoped delete into its own method; add CI
+  ([`359c308`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/359c3088f1e6330ef8bae297d6d9d2925a01a375))
+
+Review feedback on #4, from @peterb154 and a self-review that converged on the same two blockers.
+
+delete(namespace=None) meant "every namespace" while add/search/list all read None as "the default
+  namespace" — same class, same parameter name, same sentinel, inverted blast radius, invisible to a
+  type checker. A `str | None` variable threaded into what looked like the same argument turned a
+  scoped delete into a cross-tenant one: the bug #3 is about, wearing the fix's clothes. The README
+  made it worse by saying "pass the same namespace you pass to search", which is a cross-tenant
+  delete when that namespace is legitimately None.
+
+delete(memory_id, *, namespace: str) now rejects None; the unscoped path moved to
+  delete_across_namespaces(memory_id). Chose a second method over an ALL_NAMESPACES sentinel because
+  the sentinel forces the annotation to `str | object`, giving up the static check that makes the
+  required-kwarg fix bite. Runtime fails closed too: None yields `WHERE namespace = NULL`, which
+  matches nothing, so an untyped caller deletes zero rows rather than someone else's. Both
+  properties are now tested.
+
+Nothing ran these tests. .github/workflows/ held only release.yml, so pytest and ruff never ran in
+  CI, and test_memory_scoping self-skipped when Postgres was unreachable — a skipped security test
+  and a passing one look identical in a CI summary. Added test.yml (builds images/db/Dockerfile for
+  pgvector+postgis, migrates, lints, tests) and made the skip raise under CI=true. The signature
+  assertions moved to test_import.py so they survive without a database — that's what stops someone
+  restoring a default later.
+
+Marked breaking, with major_on_zero=false so it still cuts 0.9.0 rather than claiming 1.0.0
+  stability. Without the marker the changelog would file a required-argument change under Features
+  and anyone pinned >=0.8,<1.0 would upgrade into a TypeError.
+
+Also: test_delete_explicit_none_is_cross_namespace asserted a postcondition a correctly-scoped
+  delete satisfies identically, so it would have stayed green through the regression it was named
+  for — rewritten to assert the contrast. Fixed the list() docstring's claim that paging stability
+  comes from stable ids rather than from the total ordering.
+
+Refs #3
+
+### Testing
+
+- **memory**: Close gaps found reviewing the review fixes
+  ([`787fc4b`](https://github.com/peterb154/strands-pgsql-agent-framework/commit/787fc4b7c783dae2d912a4c84784a1c70e709b81))
+
+Six findings from a delta review of 359c308 and 3613ab2. Three of them weakened tests that exist
+  specifically to be trustworthy.
+
+update() documented "metadata is preserved" in its docstring and the README, and nothing tested it.
+  The SQL was already right, but the existing test couldn't have caught a regression anyway — it
+  added a row with no metadata, so losing it was invisible. The fixture now carries metadata and
+  asserts it survives; verified the assertion bites by clobbering the column out of band.
+
+The fake embedder used sum(ord(c)), which is permutation-invariant: 'note 12' and 'note 21' embedded
+  identically. Nothing collides today, but test_list_offset_pages writes note 0..4 and is one
+  loop-count from it, and the update re-embed test asserts "the old wording no longer matches" —
+  pick two anagrams and it passes while asserting nothing. Now crc32.
+
+The signature tests compared Parameter.annotation to the literal "str", which only holds while
+  memory.py carries `from __future__ import annotations`. Deleting that line — an unremarkable
+  refactor — failed a test whose message claims the namespace contract broke. Now uses
+  inspect.get_annotations(eval_str=True), which gives the same answer either way. Both tests assert
+  the identical contract, so it's one shared helper.
+
+Docstrings had grown to 24 lines against 14 of code on update, and 21 against 8 on delete, in a file
+  where add and search get one line each — with the same prose duplicated in the README and the PR
+  body. Trimmed to the contract plus the load-bearing why; the README keeps the long form.
+
+Workflow: added permissions: contents: read (the job only reads code and runs pytest), pinned both
+  actions by commit SHA with the version in a trailing comment (a tag is mutable, so @v6 runs
+  whatever that owner points at today with repo credentials), and moved the env block above steps
+  where readers expect it. release.yml stays tag-pinned — separate change.
+
+Refs #3
+
+
 ## v0.8.0 (2026-04-27)
 
 ### Bug Fixes
