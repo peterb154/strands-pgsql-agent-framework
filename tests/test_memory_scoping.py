@@ -2,8 +2,12 @@
 
 These hit a real Postgres — the behavior under test is a SQL WHERE clause,
 so mocking the cursor would only assert that we wrote the string we wrote.
-Skipped when the configured pool can't reach Postgres (CI without a DB,
-fresh checkout without env vars, etc.).
+Skipped locally when the configured pool can't reach Postgres (fresh
+checkout without env vars, etc.).
+
+Under CI the skip is an error instead. These guard a cross-tenant boundary,
+and a skipped security test is indistinguishable from a passing one in a CI
+summary — silently skipping here is how a regression on #3 ships green.
 
 The embedder is a fake: deterministic, no AWS, no network. We never assert
 on ranking quality here, only on which rows a query is allowed to touch.
@@ -11,6 +15,7 @@ on ranking quality here, only on which rows a query is allowed to touch.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -35,7 +40,16 @@ def _pg_reachable() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _pg_reachable(), reason="Postgres not reachable")
+_REACHABLE = _pg_reachable()
+
+if os.environ.get("CI") == "true" and not _REACHABLE:
+    raise RuntimeError(
+        "Postgres is required in CI: the namespace-scoping tests must fail "
+        "loudly rather than skip. Check the db service in .github/workflows/"
+        "test.yml and that STRANDS_PG_DSN points at it."
+    )
+
+pytestmark = pytest.mark.skipif(not _REACHABLE, reason="Postgres not reachable")
 
 _DIMS = 1024
 
@@ -63,12 +77,6 @@ def _cleanup(*nss: str) -> None:
     with get_pool().connection() as conn:
         conn.execute("DELETE FROM memories WHERE namespace = ANY(%s)", (list(nss),))
         conn.commit()
-
-
-def test_delete_requires_namespace_argument(store: PgMemoryStore) -> None:
-    """The whole point of the fix: you cannot call delete unscoped by accident."""
-    with pytest.raises(TypeError):
-        store.delete(1)  # type: ignore[call-arg]
 
 
 def test_delete_wrong_namespace_leaves_row_intact(
@@ -102,22 +110,46 @@ def test_delete_correct_namespace_removes_row(
         _cleanup(alice, bob)
 
 
-def test_delete_explicit_none_is_cross_namespace(
+def test_delete_across_namespaces_reaches_what_scoped_delete_cannot(
     store: PgMemoryStore, namespaces: tuple[str, str]
 ) -> None:
-    """The admin/prune escape hatch still works — it just has to be asked for."""
+    """The admin escape hatch, asserted by contrast.
+
+    The contrast is the test: asserting only that the row is gone afterwards
+    would pass identically for a correctly-scoped delete, so it would stay
+    green through the exact regression it's named for.
+    """
     alice, bob = namespaces
     try:
         mid = store.add("alice's private note", namespace=alice)
-        assert store.delete(mid, namespace=None) is True
+
+        assert store.delete(mid, namespace=bob) is False  # scoped can't touch it
+        assert store.delete_across_namespaces(mid) is True  # only this can
+
         assert [h.id for h in store.list(namespace=alice)] == []
     finally:
         _cleanup(alice, bob)
 
 
-def test_search_never_crosses_namespaces(
+def test_delete_with_none_namespace_fails_closed(
     store: PgMemoryStore, namespaces: tuple[str, str]
 ) -> None:
+    """Belt and braces: the annotation says ``str``, but Python doesn't
+    enforce annotations, so an untyped caller can still get ``None`` in
+    here. It must delete nothing rather than everything — the old behavior
+    of this argument was the opposite, which is what #3 was about.
+    """
+    alice, bob = namespaces
+    try:
+        mid = store.add("alice's private note", namespace=alice)
+
+        assert store.delete(mid, namespace=None) is False  # type: ignore[arg-type]
+        assert mid in [h.id for h in store.list(namespace=alice)]
+    finally:
+        _cleanup(alice, bob)
+
+
+def test_search_never_crosses_namespaces(store: PgMemoryStore, namespaces: tuple[str, str]) -> None:
     alice, bob = namespaces
     try:
         store.add("the shared secret phrase", namespace=alice)
@@ -131,9 +163,7 @@ def test_search_never_crosses_namespaces(
         _cleanup(alice, bob)
 
 
-def test_list_offset_pages(
-    store: PgMemoryStore, namespaces: tuple[str, str]
-) -> None:
+def test_list_offset_pages(store: PgMemoryStore, namespaces: tuple[str, str]) -> None:
     alice, bob = namespaces
     try:
         for i in range(5):
@@ -153,9 +183,7 @@ def test_list_offset_pages(
         _cleanup(alice, bob)
 
 
-def test_created_at_is_populated(
-    store: PgMemoryStore, namespaces: tuple[str, str]
-) -> None:
+def test_created_at_is_populated(store: PgMemoryStore, namespaces: tuple[str, str]) -> None:
     alice, bob = namespaces
     try:
         store.add("dated note", namespace=alice)

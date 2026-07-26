@@ -46,3 +46,38 @@ def test_memory_tools_requires_namespace_shape() -> None:
         raise AssertionError(
             "memory_tools should reject passing both namespace and namespaces"
         )
+
+
+def test_delete_signature_refuses_unscoped_calls() -> None:
+    """Guards the API *shape* of the #3 fix, with no database needed.
+
+    Lives here rather than in test_memory_scoping.py so it survives when
+    Postgres is unreachable — this is the assertion that stops someone
+    "helpfully" restoring a default namespace later. Uses inspect rather
+    than a live call so no connection is ever opened.
+    """
+    import inspect
+
+    from strands_pg import PgMemoryStore
+
+    sig = inspect.signature(PgMemoryStore.delete)
+    ns = sig.parameters["namespace"]
+
+    assert ns.kind is inspect.Parameter.KEYWORD_ONLY, (
+        "namespace must be keyword-only so it can't be passed positionally "
+        "by accident"
+    )
+    assert ns.default is inspect.Parameter.empty, (
+        "namespace must have no default — an optional scope on a destructive "
+        "op is the bug from #3"
+    )
+    assert ns.annotation == "str", (
+        "namespace must be str, not str | None: None would have to mean "
+        "'every namespace', which is what delete_across_namespaces is for"
+    )
+
+    # The unscoped path exists, but only under its own explicit name.
+    assert callable(PgMemoryStore.delete_across_namespaces)
+    assert "namespace" not in inspect.signature(
+        PgMemoryStore.delete_across_namespaces
+    ).parameters

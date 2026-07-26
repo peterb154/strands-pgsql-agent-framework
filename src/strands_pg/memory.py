@@ -115,14 +115,14 @@ class PgMemoryStore:
             for r in rows
         ]
 
-    def delete(self, memory_id: int, *, namespace: str | None) -> bool:
-        """Delete by id, scoped to ``namespace``. True if a row was removed.
+    def delete(self, memory_id: int, *, namespace: str) -> bool:
+        """Delete by id within ``namespace``. True if a row was removed.
 
-        ``namespace`` is required and has no default on purpose. Row ids are
-        sequential (``BIGSERIAL``) and are shown to callers — the built-in
-        recall tool renders hits as ``- [id] text`` — so an unscoped delete
-        lets any tenant remove another tenant's memories by guessing an
-        integer. Pass the same namespace you'd pass to ``search``:
+        ``namespace`` is required, keyword-only, and cannot be ``None`` on
+        purpose. Row ids are sequential (``BIGSERIAL``) and are shown to
+        callers — the built-in recall tool renders hits as ``- [id] text`` —
+        so an unscoped delete lets any tenant remove another tenant's
+        memories by guessing an integer::
 
             store.delete(mid, namespace=f"user:{email}")
 
@@ -130,18 +130,34 @@ class PgMemoryStore:
         callers should surface as not-found (not as "wrong tenant" — that
         would leak the existence of the row).
 
-        Pass ``namespace=None`` to delete across every namespace. That's the
-        old behavior, kept for admin/prune scripts, and now has to be said
-        out loud rather than being what you get by forgetting an argument.
+        Note the deliberate asymmetry with ``add``/``search``/``list``: those
+        accept ``namespace=None`` to mean "the default namespace". Here that
+        would have to mean "every namespace", so it is rejected outright
+        rather than overloaded. To delete regardless of namespace, call
+        ``delete_across_namespaces`` — a separate name, so the destructive
+        version can never be reached by threading a ``str | None`` variable
+        into an argument that looked safe at the other call sites.
         """
         with self._pool.connection() as conn, conn.cursor() as cur:
-            if namespace is None:
-                cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
-            else:
-                cur.execute(
-                    "DELETE FROM memories WHERE id = %s AND namespace = %s",
-                    (memory_id, namespace),
-                )
+            cur.execute(
+                "DELETE FROM memories WHERE id = %s AND namespace = %s",
+                (memory_id, namespace),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def delete_across_namespaces(self, memory_id: int) -> bool:
+        """Delete by id in ANY namespace. True if a row was removed.
+
+        The unscoped delete, for admin and prune scripts that legitimately
+        operate over the whole table. Named at length so it is obvious at
+        the call site and greppable in review — never reachable by passing
+        a variable that happened to be ``None``.
+
+        Anything serving a request on behalf of a user wants ``delete``.
+        """
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
             conn.commit()
             return cur.rowcount > 0
 
@@ -153,8 +169,12 @@ class PgMemoryStore:
     ) -> list[MemoryHit]:
         """Most-recent-first list. Convenience; not embedded.
 
-        ``offset`` pages through a namespace larger than one call: the ids
-        are stable, so ``list(ns, limit=100, offset=100)`` is the second page.
+        ``offset`` pages through a namespace larger than one call:
+        ``list(ns, limit=100, offset=100)`` is the second page. Pages don't
+        overlap or drop rows because the ordering is total — ``created_at``
+        alone isn't, since bulk inserts can share a timestamp, hence the
+        ``id`` tiebreaker. This is offset paging, not keyset: a concurrent
+        insert shifts later pages by one.
         """
         ns = namespace or self._default_namespace
         with self._pool.connection() as conn, conn.cursor() as cur:

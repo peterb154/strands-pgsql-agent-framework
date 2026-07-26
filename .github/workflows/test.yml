@@ -1,0 +1,72 @@
+name: test
+
+# Runs the suite against a real Postgres on every PR and every push to main.
+#
+# Why a built image instead of a `services:` block: migrations/001_init.sql
+# does CREATE EXTENSION postgis, and no stock pgvector image ships PostGIS.
+# images/db/Dockerfile is the one that has both, and it's what deployments
+# actually run — testing against anything else would test a different DB.
+# Service containers can't use an image built in an earlier step, so the DB
+# is started with plain `docker run`.
+#
+# CI=true is set by Actions, which makes tests/test_memory_scoping.py raise
+# instead of skip if this database is unreachable. The namespace-scoping
+# tests guard a cross-tenant boundary (#3); a silent skip there reports
+# green while verifying nothing.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build database image
+        run: docker build -f images/db/Dockerfile -t strands-pg-db:ci .
+
+      - name: Start Postgres
+        run: |
+          docker run -d --name strands-ci-pg \
+            -e POSTGRES_USER=strands \
+            -e POSTGRES_PASSWORD=strands \
+            -e POSTGRES_DB=strands \
+            -p 5432:5432 \
+            strands-pg-db:ci
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 60); do
+            if docker exec strands-ci-pg pg_isready -U strands -d strands; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres never became ready"
+          docker logs strands-ci-pg
+          exit 1
+
+      - name: Apply migrations
+        run: uv run --extra dev --extra bedrock python -m strands_pg.migrate
+
+      - name: Lint
+        run: uv run --extra dev ruff check src tests
+
+      - name: Test
+        run: uv run --extra dev --extra bedrock pytest tests -v
+
+    env:
+      STRANDS_PG_DSN: postgresql://strands:strands@localhost:5432/strands
