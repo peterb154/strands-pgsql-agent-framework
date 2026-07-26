@@ -118,29 +118,17 @@ class PgMemoryStore:
     def update(self, memory_id: int, text: str, *, namespace: str) -> bool:
         """Replace a memory's text in place, re-embedding. True if updated.
 
-        The missing corner of the CRUD. Without it, "fix the wording of this
-        note" degrades into delete-then-add, which is not atomic (a failure
-        between the two loses the note with no rollback) and restamps ``id``
-        and ``created_at``, so an April fact edited today starts claiming it
-        was written today.
-
-        ``id``, ``created_at``, and ``metadata`` are preserved; ``text`` and
-        ``embedding`` are replaced together. They have to move together — an
-        update that rewrote the text without re-embedding would leave
+        Preserves ``id``, ``created_at`` and ``metadata``; replaces ``text``
+        and ``embedding`` together — rewriting one without the other leaves
         ``search`` matching the old wording while returning the new text.
 
-        ``namespace`` is scoped exactly as in ``delete``: required,
-        keyword-only, no ``None``. Ids are sequential and shown to callers,
-        so an unscoped update would let one tenant overwrite another's
-        memories — worse than an unscoped delete, since the victim keeps a
-        note that no longer says what they wrote. A mismatch changes nothing
-        and returns ``False``; surface it as not-found.
-
-        The embedding is computed before the connection is checked out, so a
-        slow embedder doesn't hold a pooled connection. The cost is that an
-        update against a wrong id/namespace still pays for one embedding —
-        cheaper than a check-then-update round trip that would race anyway.
+        ``namespace`` is required and scoped exactly as in ``delete``: an
+        unscoped update would let one tenant overwrite another's memories.
+        A mismatch changes nothing and returns ``False``.
         """
+        # Embed before checking out a connection so a slow embedder doesn't
+        # hold one. Costs a wasted embedding on a bad id — cheaper than a
+        # check-then-update round trip, which would race anyway.
         embedding = self._embedder(text)
 
         with self._pool.connection() as conn, conn.cursor() as cur:
@@ -158,25 +146,15 @@ class PgMemoryStore:
     def delete(self, memory_id: int, *, namespace: str) -> bool:
         """Delete by id within ``namespace``. True if a row was removed.
 
-        ``namespace`` is required, keyword-only, and cannot be ``None`` on
-        purpose. Row ids are sequential (``BIGSERIAL``) and are shown to
-        callers — the built-in recall tool renders hits as ``- [id] text`` —
-        so an unscoped delete lets any tenant remove another tenant's
-        memories by guessing an integer::
+        ``namespace`` is required and cannot be ``None``: ids are sequential
+        and shown to callers, so an unscoped delete lets any tenant remove
+        another's memories by guessing an integer (#3). Unlike
+        ``add``/``search``/``list``, ``None`` isn't "the default namespace"
+        here — it would have to mean "every namespace", so it's rejected
+        rather than overloaded. See ``delete_across_namespaces``.
 
-            store.delete(mid, namespace=f"user:{email}")
-
-        A namespace mismatch removes nothing and returns ``False``, which
-        callers should surface as not-found (not as "wrong tenant" — that
-        would leak the existence of the row).
-
-        Note the deliberate asymmetry with ``add``/``search``/``list``: those
-        accept ``namespace=None`` to mean "the default namespace". Here that
-        would have to mean "every namespace", so it is rejected outright
-        rather than overloaded. To delete regardless of namespace, call
-        ``delete_across_namespaces`` — a separate name, so the destructive
-        version can never be reached by threading a ``str | None`` variable
-        into an argument that looked safe at the other call sites.
+        A mismatch removes nothing and returns ``False``; surface that as
+        not-found, not "wrong tenant", which would leak the row's existence.
         """
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -189,12 +167,9 @@ class PgMemoryStore:
     def delete_across_namespaces(self, memory_id: int) -> bool:
         """Delete by id in ANY namespace. True if a row was removed.
 
-        The unscoped delete, for admin and prune scripts that legitimately
-        operate over the whole table. Named at length so it is obvious at
-        the call site and greppable in review — never reachable by passing
-        a variable that happened to be ``None``.
-
-        Anything serving a request on behalf of a user wants ``delete``.
+        For admin and prune scripts that legitimately span the whole table.
+        Named at length so it's obvious at the call site and greppable in
+        review. Anything serving a user request wants ``delete``.
         """
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
@@ -209,12 +184,11 @@ class PgMemoryStore:
     ) -> list[MemoryHit]:
         """Most-recent-first list. Convenience; not embedded.
 
-        ``offset`` pages through a namespace larger than one call:
-        ``list(ns, limit=100, offset=100)`` is the second page. Pages don't
-        overlap or drop rows because the ordering is total — ``created_at``
-        alone isn't, since bulk inserts can share a timestamp, hence the
-        ``id`` tiebreaker. This is offset paging, not keyset: a concurrent
-        insert shifts later pages by one.
+        ``offset`` pages a namespace larger than one call. The ``id``
+        tiebreaker makes the ordering total — ``created_at`` alone isn't,
+        since bulk inserts share a timestamp — so pages don't overlap or
+        drop rows. Offset paging, not keyset: a concurrent insert shifts
+        later pages by one.
         """
         ns = namespace or self._default_namespace
         with self._pool.connection() as conn, conn.cursor() as cur:

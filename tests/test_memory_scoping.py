@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import time
+import zlib
 
 import pytest
 
@@ -55,9 +56,14 @@ _DIMS = 1024
 
 
 def _fake_embedder(text: str) -> list[float]:
-    """Deterministic unit-ish vector derived from the text. Same text ->
-    same vector, different text -> different vector. That's all we need."""
-    seed = sum(ord(c) for c in text) or 1
+    """Deterministic vector derived from the text. Same text -> same vector,
+    different text -> different vector. That's all we need.
+
+    crc32 rather than sum(ord(c)): a character sum is permutation-invariant,
+    so 'note 12' and 'note 21' would embed identically and any test asserting
+    "the old wording no longer matches" would silently assert nothing.
+    """
+    seed = zlib.crc32(text.encode()) or 1
     return [((seed * (i + 1)) % 97) / 97.0 for i in range(_DIMS)]
 
 
@@ -160,7 +166,11 @@ def test_update_preserves_identity_and_reembeds(
     """
     alice, bob = namespaces
     try:
-        mid = store.add("Bes prefers gluten-free and also dislikes pork", namespace=alice)
+        mid = store.add(
+            "Bes prefers gluten-free and also dislikes pork",
+            metadata={"tags": ["diet"], "source": "chat"},
+            namespace=alice,
+        )
         before = store.list(namespace=alice)[0]
 
         assert store.update(mid, "Bes prefers gluten-free", namespace=alice) is True
@@ -169,6 +179,9 @@ def test_update_preserves_identity_and_reembeds(
         assert after.id == mid  # identity preserved
         assert after.created_at == before.created_at  # provenance preserved
         assert after.text == "Bes prefers gluten-free"
+
+        # Documented guarantee: update replaces text + embedding, nothing else.
+        assert after.metadata == {"tags": ["diet"], "source": "chat"}
 
         # The embedding moved with the text: the new wording is an exact hit,
         # the dropped wording no longer is.

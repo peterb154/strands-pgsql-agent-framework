@@ -26,12 +26,25 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Least privilege: this job reads code and runs pytest. It never writes
+    # to the repo — that's release.yml's job, and it asks for its own scopes.
+    permissions:
+      contents: read
+
+    env:
+      STRANDS_PG_DSN: postgresql://strands:strands@localhost:5432/strands
+
     steps:
+      # Actions pinned by commit SHA, not tag: a tag is mutable, so `@v6`
+      # is "whatever that owner points it at today" running with repo
+      # credentials. Comments record the human-readable version. Bump both
+      # together. (release.yml is still tag-pinned — separate change.)
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
@@ -67,6 +80,3 @@ jobs:
 
       - name: Test
         run: uv run --extra dev --extra bedrock pytest tests -v
-
-    env:
-      STRANDS_PG_DSN: postgresql://strands:strands@localhost:5432/strands

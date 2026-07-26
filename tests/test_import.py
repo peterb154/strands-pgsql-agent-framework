@@ -48,6 +48,35 @@ def test_memory_tools_requires_namespace_shape() -> None:
         )
 
 
+def _assert_namespace_is_required_str(method: object, name: str) -> None:
+    """Shared contract for the destructive methods: namespace is keyword-only,
+    has no default, and is annotated ``str`` rather than ``str | None``.
+
+    Uses ``inspect.get_annotations(eval_str=True)`` rather than comparing
+    ``Parameter.annotation`` to the literal "str". That comparison only holds
+    while memory.py carries ``from __future__ import annotations``; drop that
+    line and the assertion fails claiming the security contract broke when it
+    didn't. Evaluating gives the same answer either way.
+    """
+    import inspect
+
+    ns = inspect.signature(method).parameters["namespace"]
+
+    assert ns.kind is inspect.Parameter.KEYWORD_ONLY, (
+        f"{name}: namespace must be keyword-only so it can't be passed positionally"
+    )
+    assert ns.default is inspect.Parameter.empty, (
+        f"{name}: namespace must have no default — an optional scope on a "
+        "destructive op is the bug from #3"
+    )
+
+    annotation = inspect.get_annotations(method, eval_str=True)["namespace"]
+    assert annotation is str, (
+        f"{name}: namespace must be str, not str | None — None would have to "
+        "mean 'every namespace', which is what delete_across_namespaces is for"
+    )
+
+
 def test_delete_signature_refuses_unscoped_calls() -> None:
     """Guards the API *shape* of the #3 fix, with no database needed.
 
@@ -60,19 +89,7 @@ def test_delete_signature_refuses_unscoped_calls() -> None:
 
     from strands_pg import PgMemoryStore
 
-    sig = inspect.signature(PgMemoryStore.delete)
-    ns = sig.parameters["namespace"]
-
-    assert ns.kind is inspect.Parameter.KEYWORD_ONLY, (
-        "namespace must be keyword-only so it can't be passed positionally by accident"
-    )
-    assert ns.default is inspect.Parameter.empty, (
-        "namespace must have no default — an optional scope on a destructive op is the bug from #3"
-    )
-    assert ns.annotation == "str", (
-        "namespace must be str, not str | None: None would have to mean "
-        "'every namespace', which is what delete_across_namespaces is for"
-    )
+    _assert_namespace_is_required_str(PgMemoryStore.delete, "delete")
 
     # The unscoped path exists, but only under its own explicit name.
     assert callable(PgMemoryStore.delete_across_namespaces)
@@ -84,12 +101,6 @@ def test_update_signature_is_scoped_like_delete() -> None:
     sharper reason: an unscoped update overwrites another tenant's memory
     rather than removing it, so they keep a note that no longer says what
     they wrote. No database needed — this asserts the API shape."""
-    import inspect
-
     from strands_pg import PgMemoryStore
 
-    ns = inspect.signature(PgMemoryStore.update).parameters["namespace"]
-
-    assert ns.kind is inspect.Parameter.KEYWORD_ONLY
-    assert ns.default is inspect.Parameter.empty
-    assert ns.annotation == "str"
+    _assert_namespace_is_required_str(PgMemoryStore.update, "update")
