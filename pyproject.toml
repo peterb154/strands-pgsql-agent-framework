@@ -72,14 +72,22 @@ tag_format = "v{version}"
 # only the first:
 #
 #   1. `!` after the type — `feat(memory)!:` — classifies the bump.
-#   2. A `BREAKING CHANGE: <what broke>` footer in the commit body —
-#      this, and only this, renders the changelog's Breaking Changes
-#      section. The `!` alone leaves the commit filed under Features.
+#   2. A `BREAKING CHANGE: <what broke>` footer in the commit body. Only
+#      this renders a Breaking Changes entry. It doesn't move the commit
+#      out of Features — it adds an entry alongside it.
+#
+# Verified against python-semantic-release 9.21.0 on a scratch repo:
+#   `feat(x)!:` alone            -> Features only, no Breaking Changes
+#   `feat(x)!:` + footer         -> Features AND Breaking Changes
+#   `feat(x)!:`, major_on_zero=true -> 1.0.0 (so `!` does drive the bump)
+# Re-check if psr is upgraded; treat this block as stale, not authoritative.
 #
 # The omission is invisible from the version number, because with
 # major_on_zero = false a breaking change and a plain feat: both produce a
 # minor bump. v0.9.0's release notes carry a hand-written banner as a
-# result. Write the footer.
+# result — and it had to go in the GitHub Release rather than CHANGELOG.md,
+# because psr regenerates that file from history and would overwrite it
+# (also verified). Write the footer.
 major_on_zero = false
 
 [tool.semantic_release.branches.main]

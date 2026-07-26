@@ -13,9 +13,9 @@ name: release
 #   docs:/chore:/etc:  -> no release
 #
 # A breaking change needs a `BREAKING CHANGE:` footer in the commit body to
-# appear under Breaking Changes in the changelog. The `!` alone only affects
-# the bump, and pre-1.0 that bump is indistinguishable from a plain feat: —
-# so a missing footer is silent. See the note in pyproject.toml.
+# get a Breaking Changes entry in the changelog — the `!` alone only affects
+# the bump, and pre-1.0 that bump is indistinguishable from a plain feat:,
+# so a missing footer is silent. See the verified note in pyproject.toml.
 
 on:
   push:
