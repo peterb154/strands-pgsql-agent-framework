@@ -156,7 +156,10 @@ sequenceDiagram
 - `PgMemoryStore` + `memory_tools(namespace=...)` — semantic memory on pgvector
   with HNSW indexing. The factory returns `[remember, recall]` closures bound
   to whatever namespace you pass (usually a session id or email), so every user
-  gets an isolated memory bucket automatically.
+  gets an isolated memory bucket automatically. Add `manage=True` for
+  `list_memories` / `update_memory` / `forget_memory` when the agent should
+  curate its own memory — off by default, since deletion shouldn't appear on
+  an agent that was never meant to have it.
 
 - `PgPromptStore` — prompts live as rows in a `prompts` table. On first boot
   the store seeds itself from `./prompts/*.md`; after that the database is the
